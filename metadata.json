@@ -1,0 +1,8 @@
+{
+  "name": "CHMR",
+  "description": "Non-linear multi-track video editing workstation with real-time compositing, color grading, audio mixing, and WebM export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

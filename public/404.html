@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CHMR — Redirecting…</title>
+    <script>
+      (function () {
+        var loc = window.location;
+        var path = loc.pathname || '/';
+        var match = path.match(/^(.*?)(\/(?:terms|terms-of-service|privacy|privacy-policy))\/?$/i);
+        if (match) {
+          var base = match[1] || '';
+          var route = match[2];
+          loc.replace(loc.origin + base + '/#' + route + (loc.search || ''));
+        } else {
+          var segments = path.split('/').filter(Boolean);
+          var fallbackBase = segments.length > 0 ? '/' + segments[0] + '/' : '/';
+          loc.replace(loc.origin + fallbackBase);
+        }
+      })();
+    </script>
+  </head>
+  <body style="background:#121214;color:#EAEAF0;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+    <p>Redirecting to CHMR…</p>
+  </body>
+</html>
