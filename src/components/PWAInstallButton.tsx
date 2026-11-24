@@ -14,7 +14,8 @@ import {
   WifiOff,
   X,
 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useOnlineStatus, usePWAInstall } from '../hooks/usePWAInstall';
 import { assetUrl, parseJsonResponse } from '../utils/runtime';
 
@@ -95,11 +96,64 @@ export function PWAInstallButton({ onNavigate }: { onNavigate?: (path: string) =
     fetchConfig();
   }, [fetchConfig]);
 
+  const modalRef = useRef<HTMLDivElement | null>(null);
+  const dragOffsetRef = useRef({ x: 0, y: 0 });
+  const backdropPressedRef = useRef(false);
+
   useEffect(() => {
-    if (showModal) {
-      fetchConfig();
+    if (!showModal) return;
+    fetchConfig();
+    dragOffsetRef.current = { x: 0, y: 0 };
+    if (modalRef.current) {
+      modalRef.current.style.transform = '';
     }
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowModal(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showModal, fetchConfig]);
+
+  const handleHeaderMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest('button')) return;
+    const modalEl = modalRef.current;
+    if (!modalEl) return;
+
+    e.preventDefault();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const originX = dragOffsetRef.current.x;
+    const originY = dragOffsetRef.current.y;
+    const rect = modalEl.getBoundingClientRect();
+    const maxOffsetX = Math.max(0, (window.innerWidth - rect.width) / 2 - 12);
+    const maxOffsetY = Math.max(0, (window.innerHeight - rect.height) / 2 - 12);
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const nextX = Math.max(-maxOffsetX, Math.min(maxOffsetX, originX + (moveEvent.clientX - startX)));
+      const nextY = Math.max(-maxOffsetY, Math.min(maxOffsetY, originY + (moveEvent.clientY - startY)));
+      dragOffsetRef.current = { x: nextX, y: nextY };
+      modalEl.style.transform = `translate3d(${nextX}px, ${nextY}px, 0)`;
+    };
+
+    const onMouseUp = () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  };
+
+  const handleHeaderDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).closest('button')) return;
+    dragOffsetRef.current = { x: 0, y: 0 };
+    if (modalRef.current) {
+      modalRef.current.style.transform = '';
+    }
+  };
 
   const isElectron =
     typeof window !== 'undefined' && Boolean(window.chmrDesktop?.isElectron || window.chmrDesktop?.isLocalDesktop);
@@ -231,38 +285,57 @@ export function PWAInstallButton({ onNavigate }: { onNavigate?: (path: string) =
         </span>
       </button>
 
-      {showModal && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="windows-install-title"
-        >
-          <div className="w-full max-w-2xl rounded bg-[#18181D] border border-[#2E2E37] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-            {/* Header */}
-            <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#27272E] bg-[#141418] shrink-0">
-              <div className="flex items-center gap-2.5">
-                <img src={assetUrl('chmr-logo.png')} alt="CHMR" className="w-5 h-5 rounded-sm object-cover" />
-                <div>
-                  <h2 id="windows-install-title" className="text-sm font-semibold text-[#F4F4F7] leading-tight">
-                    {hasBackendApi ? 'CHMR Desktop Workstation & Local Sync' : 'CHMR Standalone Browser App'}
-                  </h2>
-                  <p className="text-[11px] text-[#8E8E9B]">
-                    {hasBackendApi
-                      ? 'Run 100% locally on your PC — no Chrome tabs, no Google Cloud publishing or billing required'
-                      : 'Running 100% client-side with zero cloud backend — edit, chroma key, grade, and export locally'}
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowModal(false)}
-                className="p-1 text-[#8E8E9B] hover:text-white rounded cursor-pointer"
-                aria-label="Close desktop dialog"
+      {showModal &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/75 p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="windows-install-title"
+            onMouseDown={(e) => {
+              backdropPressedRef.current = e.target === e.currentTarget;
+            }}
+            onClick={(e) => {
+              if (backdropPressedRef.current && e.target === e.currentTarget) {
+                setShowModal(false);
+              }
+              backdropPressedRef.current = false;
+            }}
+          >
+            <div
+              ref={modalRef}
+              className="w-full max-w-2xl rounded bg-[#18181D] border border-[#2E2E37] shadow-2xl overflow-hidden flex flex-col max-h-[85vh]"
+            >
+              {/* Header (draggable) */}
+              <div
+                onMouseDown={handleHeaderMouseDown}
+                onDoubleClick={handleHeaderDoubleClick}
+                title="Drag to move window (double-click to re-center)"
+                className="flex items-center justify-between px-5 py-3.5 border-b border-[#27272E] bg-[#141418] shrink-0 cursor-grab active:cursor-grabbing select-none"
               >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
+                <div className="flex items-center gap-2.5">
+                  <img src={assetUrl('chmr-logo.png')} alt="CHMR" className="w-5 h-5 rounded-sm object-cover" />
+                  <div>
+                    <h2 id="windows-install-title" className="text-sm font-semibold text-[#F4F4F7] leading-tight">
+                      {hasBackendApi ? 'CHMR Desktop Workstation & Local Sync' : 'CHMR Standalone Browser App'}
+                    </h2>
+                    <p className="text-[11px] text-[#8E8E9B]">
+                      {hasBackendApi
+                        ? 'Run 100% locally on your PC — no Chrome tabs, no Google Cloud publishing or billing required'
+                        : 'Running 100% client-side with zero cloud backend — edit, chroma key, grade, and export locally'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowModal(false)}
+                  className="p-1 text-[#8E8E9B] hover:text-white rounded cursor-pointer"
+                  aria-label="Close desktop dialog"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
 
             {/* Segmented Tab Bar */}
             <div className="flex items-center gap-1 px-5 pt-2.5 bg-[#141418] border-b border-[#27272E] shrink-0 overflow-x-auto">
@@ -789,8 +862,9 @@ export function PWAInstallButton({ onNavigate }: { onNavigate?: (path: string) =
               </div>
             </div>
           </div>
-        </div>
-      )}
+          </div>,
+          document.body
+        )}
     </>
   );
 }

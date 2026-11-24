@@ -119,6 +119,7 @@ async function createWindow() {
     overrideBrowserWindowOptions: {
       width: 560,
       height: 720,
+      center: true,
       autoHideMenuBar: true,
       backgroundColor: '#121214',
       ...(iconPath ? { icon: iconPath } : {}),

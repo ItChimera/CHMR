@@ -1,6 +1,5 @@
 import { BarChart3, UserCheck } from 'lucide-react';
 import { assetUrl } from '../utils/runtime';
-import { PWAInstallButton } from './PWAInstallButton';
 
 export type AppViewMode = 'home' | 'studio' | 'metrics';
 
@@ -76,7 +75,7 @@ export function TopBar({
         })}
       </nav>
 
-      {/* Zone 3: Legal Links, Saved Accounts, Desktop & Updates, Primary CTA */}
+      {/* Zone 3: Legal Links, Saved Accounts, Primary CTA */}
       <div className="flex items-center gap-2.5 shrink-0">
         <div className="hidden xl:flex items-center gap-2.5 pr-1 text-[11px] text-[#8E8E98]">
           <a
@@ -114,7 +113,6 @@ export function TopBar({
             <span className="truncate">YouTube · {savedYouTubeUser.name}</span>
           </button>
         )}
-        <PWAInstallButton onNavigate={onNavigate} />
         <button
           type="button"
           onClick={onOpenExport}
