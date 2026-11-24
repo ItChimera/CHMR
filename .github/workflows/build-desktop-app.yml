@@ -73,6 +73,8 @@ jobs:
     name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release_tag != ''
     steps:
       - name: Download all built installers
@@ -86,20 +88,34 @@ jobs:
         shell: bash
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
           else
-            echo "name=${{ github.event.inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+            TAG_NAME="$(echo "${{ github.event.inputs.release_tag }}" | xargs)"
           fi
+          echo "name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release with downloadable apps
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
           TAG="${{ steps.tag.outputs.name }}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" release-artifacts/* --clobber
+          mapfile -t FILES < <(find release-artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.AppImage' \) | sort)
+          if [[ ${#FILES[@]} -eq 0 ]]; then
+            echo "No installer files found in release-artifacts/"
+            ls -laR release-artifacts
+            exit 1
+          fi
+          echo "Publishing ${#FILES[@]} installer(s) to release $TAG in $GH_REPO:"
+          printf '  - %s\n' "${FILES[@]}"
+          if gh release view "$TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${FILES[@]}" --repo "$GH_REPO" --clobber
           else
-            gh release create "$TAG" release-artifacts/* \
+            gh release create "$TAG" "${FILES[@]}" \
+              --repo "$GH_REPO" \
+              --target "$GITHUB_SHA" \
               --title "CHMR $TAG" \
               --notes "Downloadable desktop installers for Windows (.exe Setup & Portable), macOS (.dmg), and Linux (.AppImage). Runs 100% locally with no cloud service required."
           fi
