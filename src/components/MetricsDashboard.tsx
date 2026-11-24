@@ -3,7 +3,6 @@ import {
   ArrowLeft,
   ArrowUpRight,
   BarChart3,
-  CheckCircle2,
   Clapperboard,
   ExternalLink,
   Maximize2,
@@ -15,16 +14,6 @@ import {
   Search,
   TrendingUp,
 } from 'lucide-react';
-import { parseJsonResponse, STATIC_BACKEND_NOTICE } from '../utils/runtime';
-import {
-  fetchTikTokMetrics,
-  fetchTikTokPublishStatus,
-  OAUTH_BROADCAST_CHANNEL,
-  setStoredTikTokSealedSession,
-  TIKTOK_SEALED_SESSION_KEY,
-  TikTokMetricsResponse,
-  TikTokPublishStatusResult,
-} from '../utils/tiktokAuth';
 import {
   extractYouTubeActivationUrl,
   fetchMyYouTubeChannel,
@@ -37,13 +26,12 @@ import {
   YouTubeRecentVideo,
 } from '../utils/youtubeAuth';
 
-export type MetricsPlatformTab = 'youtube' | 'youtube-shorts' | 'tiktok';
+export type MetricsPlatformTab = 'youtube' | 'youtube-shorts';
 type ChartMetricKey = 'views' | 'likes' | 'comments' | 'engagement';
 type SortMode = 'date' | 'views' | 'engagement';
 
 interface MetricsDashboardProps {
   initialPlatform?: MetricsPlatformTab;
-  recentTikTokPublishId?: string | null;
   onBackHome: () => void;
   onOpenEditor: () => void;
   onOpenExport: () => void;
@@ -105,7 +93,6 @@ function formatAxisShort(isoOrUnix?: string | number): string {
 
 export function MetricsDashboard({
   initialPlatform = 'youtube',
-  recentTikTokPublishId,
   onBackHome,
   onOpenEditor,
   onOpenExport,
@@ -127,15 +114,6 @@ export function MetricsDashboard({
   const [ytLoading, setYtLoading] = useState(false);
   const [ytSigningIn, setYtSigningIn] = useState(false);
   const [ytError, setYtError] = useState<string | null>(null);
-
-  // TikTok live state
-  const [ttMetrics, setTtMetrics] = useState<TikTokMetricsResponse | null>(null);
-  const [ttLoading, setTtLoading] = useState(false);
-  const [ttError, setTtError] = useState<string | null>(null);
-  const [publishIdInput, setPublishIdInput] = useState(recentTikTokPublishId || '');
-  const [publishStatusLoading, setPublishStatusLoading] = useState(false);
-  const [publishStatusResult, setPublishStatusResult] = useState<TikTokPublishStatusResult | null>(null);
-  const [publishStatusError, setPublishStatusError] = useState<string | null>(null);
 
   const [metricsLayout, setMetricsLayout] = useState<{
     graphSplitPct: number;
@@ -176,7 +154,6 @@ export function MetricsDashboard({
   const [activeMetricsResize, setActiveMetricsResize] = useState<'split' | 'graph-h' | 'table-h' | null>(null);
   const [graphSvgWidth, setGraphSvgWidth] = useState(760);
 
-  const popupPollRef = useRef<number | null>(null);
   const graphsRowRef = useRef<HTMLDivElement | null>(null);
   const graphPanelRef = useRef<HTMLDivElement | null>(null);
 
@@ -192,19 +169,6 @@ export function MetricsDashboard({
     setActiveTab(initialPlatform);
     setHoveredIdx(null);
   }, [initialPlatform]);
-
-  useEffect(() => {
-    if (recentTikTokPublishId) {
-      setPublishIdInput(recentTikTokPublishId);
-    } else {
-      try {
-        const saved = localStorage.getItem('chmr_last_tiktok_publish_id');
-        if (saved) setPublishIdInput((prev) => prev || saved);
-      } catch {
-        // ignore storage restrictions
-      }
-    }
-  }, [recentTikTokPublishId]);
 
   const loadYouTubeMetrics = useCallback(async (tokenOverride?: string | null) => {
     const token = tokenOverride ?? getYouTubeAccessToken();
@@ -235,20 +199,6 @@ export function MetricsDashboard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const loadTikTokMetrics = useCallback(async () => {
-    setTtLoading(true);
-    setTtError(null);
-    try {
-      const data = await fetchTikTokMetrics();
-      setTtMetrics(data);
-      onAccountStatusChanged?.();
-    } catch (err) {
-      setTtError(err instanceof Error ? err.message : 'Unable to load TikTok metrics.');
-    } finally {
-      setTtLoading(false);
-    }
-  }, [onAccountStatusChanged]);
-
   useEffect(() => {
     const unsub = initYouTubeAuth(
       (user, token) => {
@@ -273,8 +223,6 @@ export function MetricsDashboard({
       }
     );
 
-    loadTikTokMetrics();
-
     const handleOAuthMessage = (event: MessageEvent) => {
       const origin = event.origin;
       if (
@@ -285,45 +233,16 @@ export function MetricsDashboard({
       ) {
         return;
       }
-      if (event.data?.type === 'OAUTH_AUTH_SUCCESS' && event.data?.provider === 'tiktok') {
-        if (typeof event.data?.sessionToken === 'string') {
-          setStoredTikTokSealedSession(event.data.sessionToken);
-        }
-        setTtError(null);
-        loadTikTokMetrics();
-      } else if (event.data?.type === 'OAUTH_AUTH_ERROR' && event.data?.provider === 'tiktok') {
-        setTtError(
-          typeof event.data?.error === 'string'
-            ? event.data.error
-            : 'TikTok authorization did not complete.'
-        );
-      } else if (event.data?.type === 'OAUTH_AUTH_SUCCESS' && event.data?.provider === 'youtube') {
+      if (event.data?.type === 'OAUTH_AUTH_SUCCESS' && event.data?.provider === 'youtube') {
         loadYouTubeMetrics();
-      }
-    };
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key === TIKTOK_SEALED_SESSION_KEY) {
-        loadTikTokMetrics();
       }
     };
     let bc: BroadcastChannel | null = null;
     if (typeof BroadcastChannel !== 'undefined') {
       try {
-        bc = new BroadcastChannel(OAUTH_BROADCAST_CHANNEL);
+        bc = new BroadcastChannel('chmr_oauth');
         bc.onmessage = (event) => {
-          if (event.data?.type === 'OAUTH_AUTH_SUCCESS' && event.data?.provider === 'tiktok') {
-            if (typeof event.data?.sessionToken === 'string') {
-              setStoredTikTokSealedSession(event.data.sessionToken);
-            }
-            setTtError(null);
-            loadTikTokMetrics();
-          } else if (event.data?.type === 'OAUTH_AUTH_ERROR' && event.data?.provider === 'tiktok') {
-            setTtError(
-              typeof event.data?.error === 'string'
-                ? event.data.error
-                : 'TikTok authorization did not complete.'
-            );
-          } else if (event.data?.type === 'OAUTH_AUTH_SUCCESS' && event.data?.provider === 'youtube') {
+          if (event.data?.type === 'OAUTH_AUTH_SUCCESS' && event.data?.provider === 'youtube') {
             loadYouTubeMetrics();
           }
         };
@@ -333,19 +252,13 @@ export function MetricsDashboard({
     }
 
     window.addEventListener('message', handleOAuthMessage);
-    window.addEventListener('storage', handleStorage);
 
     return () => {
       unsub();
       window.removeEventListener('message', handleOAuthMessage);
-      window.removeEventListener('storage', handleStorage);
       bc?.close();
-      if (popupPollRef.current !== null) {
-        window.clearInterval(popupPollRef.current);
-        popupPollRef.current = null;
-      }
     };
-  }, [loadYouTubeMetrics, loadTikTokMetrics]);
+  }, [loadYouTubeMetrics]);
 
   const handleYouTubeAuthorize = async () => {
     setYtSigningIn(true);
@@ -367,100 +280,9 @@ export function MetricsDashboard({
     }
   };
 
-  const handleTikTokOAuth = async (includeStats: boolean, scopeMode?: 'stats-only' | 'video-list-only') => {
-    setTtError(null);
-    try {
-      const query = new URLSearchParams({
-        origin: window.location.origin,
-        ...(includeStats ? { includeStats: '1' } : {}),
-        ...(scopeMode ? { scopeMode } : {}),
-      });
-      const res = await fetch(`/api/auth/tiktok/url?${query.toString()}`, {
-        credentials: 'include',
-      });
-      const data = await parseJsonResponse<{ url?: string; error?: string }>(res);
-      if (!data) {
-        setTtError(STATIC_BACKEND_NOTICE);
-        return;
-      }
-      if (!res.ok || !data.url) {
-        setTtError(data.error || 'Unable to start TikTok authorization.');
-        return;
-      }
-      const popup = window.open(data.url, 'tiktok_oauth', 'width=600,height=720');
-      if (!popup) {
-        setTtError('Popup was blocked. Allow popups once to authorize TikTok.');
-        return;
-      }
-      if (popupPollRef.current !== null) {
-        window.clearInterval(popupPollRef.current);
-      }
-      popupPollRef.current = window.setInterval(() => {
-        if (popup.closed) {
-          if (popupPollRef.current !== null) {
-            window.clearInterval(popupPollRef.current);
-            popupPollRef.current = null;
-          }
-          loadTikTokMetrics();
-        }
-      }, 500);
-    } catch (err) {
-      setTtError(err instanceof Error ? err.message : 'Failed to connect TikTok.');
-    }
-  };
-
-  const handleCheckPublishStatus = async () => {
-    const trimmed = publishIdInput.trim();
-    if (!trimmed) {
-      setPublishStatusError('Enter a TikTok Publish ID returned after uploading.');
-      return;
-    }
-    setPublishStatusLoading(true);
-    setPublishStatusError(null);
-    try {
-      const res = await fetchTikTokPublishStatus(trimmed);
-      if (!res) {
-        setPublishStatusError('Unable to fetch publish status. Verify the Publish ID and TikTok connection.');
-        setPublishStatusResult(null);
-      } else {
-        setPublishStatusResult(res);
-      }
-    } catch (err) {
-      setPublishStatusError(err instanceof Error ? err.message : 'Status check failed.');
-    } finally {
-      setPublishStatusLoading(false);
-    }
-  };
-
   const shortsVideos = useMemo(() => ytVideos.filter((v) => v.isShort), [ytVideos]);
 
   const rawPoints: NormalizedVideoPoint[] = useMemo(() => {
-    if (activeTab === 'tiktok') {
-      return (ttMetrics?.videos || []).map((v) => {
-        const views = Number(v.viewCount || 0);
-        const likes = Number(v.likeCount || 0);
-        const comments = Number(v.commentCount || 0);
-        const shares = Number(v.shareCount || 0);
-        const engagementPct = views > 0 ? ((likes + comments + shares) / views) * 100 : 0;
-        const ts = v.createTime ? v.createTime * 1000 : 0;
-        return {
-          id: v.id,
-          title: v.title || 'TikTok Video',
-          shortLabel: formatAxisShort(v.createTime) || v.title.slice(0, 10),
-          dateLabel: formatDateShort(v.createTime),
-          timestampMs: ts,
-          durationSec: v.duration,
-          views,
-          likes,
-          comments,
-          shares,
-          engagementPct,
-          thumbnailUrl: v.coverImageUrl,
-          externalUrl: v.shareUrl,
-        };
-      });
-    }
-
     const sourceList = activeTab === 'youtube-shorts' && !showAllOnShorts ? shortsVideos : ytVideos;
     return sourceList.map((v) => {
       const views = Number(v.viewCount || 0);
@@ -486,7 +308,7 @@ export function MetricsDashboard({
         privacyStatus: v.privacyStatus,
       };
     });
-  }, [activeTab, ttMetrics, ytVideos, shortsVideos, showAllOnShorts]);
+  }, [activeTab, ytVideos, shortsVideos, showAllOnShorts]);
 
   const filteredPoints = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -554,16 +376,11 @@ export function MetricsDashboard({
   }, [ytVideos]);
 
   const handleRefreshActive = () => {
-    if (activeTab === 'tiktok') {
-      loadTikTokMetrics();
-    } else {
-      loadYouTubeMetrics();
-    }
+    loadYouTubeMetrics();
   };
 
-  const isLoadingActive = activeTab === 'tiktok' ? ttLoading : ytLoading;
-  const isConnectedActive =
-    activeTab === 'tiktok' ? Boolean(ttMetrics?.connected) : ytConnected && ytHasToken;
+  const isLoadingActive = ytLoading;
+  const isConnectedActive = ytConnected && ytHasToken;
 
   useEffect(() => {
     const el = graphPanelRef.current;
@@ -731,7 +548,6 @@ export function MetricsDashboard({
               [
                 { id: 'youtube', label: 'YouTube' },
                 { id: 'youtube-shorts', label: 'YouTube Shorts' },
-                { id: 'tiktok', label: 'TikTok' },
               ] as const
             ).map((tab) => {
               const active = activeTab === tab.id;
@@ -795,62 +611,48 @@ export function MetricsDashboard({
           <div className="p-6 rounded border border-[#2E2E37] bg-[#18181D] flex items-center justify-between gap-6 flex-wrap">
             <div className="space-y-1.5 max-w-2xl">
               <h2 className="text-sm font-semibold text-[#F4F4F7]">
-                {activeTab === 'tiktok'
-                  ? 'Connect TikTok to load live creator metrics and performance graphs'
-                  : ytConnected && ytUser
+                {ytConnected && ytUser
                   ? `Authorize YouTube metrics for ${ytUser.name}`
                   : 'Connect your YouTube account to inspect channel & upload graphs'}
               </h2>
               <p className="text-xs text-[#9A9AA6] leading-relaxed">
-                {activeTab === 'tiktok'
-                  ? 'Sign in with TikTok once to inspect real follower growth metrics, recent video views, and publish verification graphs inside CHMR.'
-                  : ytConnected
-                  ? 'Google access tokens stay strictly in memory for security. Authorize once in this window to render live channel KPIs and per-video graphs.'
-                  : (
-                    <>
-                      Sign in with Google to stream live YouTube &amp; Shorts stats, or add another Gmail under{' '}
-                      <a
-                        href={YOUTUBE_TEST_USERS_URL}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-[#60A5FA] hover:underline"
-                      >
-                        Test users
-                      </a>{' '}
-                      (or configure local OAuth keys in Desktop &amp; Updates).
-                    </>
-                  )}
+                {ytConnected ? (
+                  'Google access tokens stay strictly in memory for security. Authorize once in this window to render live channel KPIs and per-video graphs.'
+                ) : (
+                  <>
+                    Sign in with Google to stream live YouTube &amp; Shorts stats, or add another Gmail under{' '}
+                    <a
+                      href={YOUTUBE_TEST_USERS_URL}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[#60A5FA] hover:underline"
+                    >
+                      Test users
+                    </a>{' '}
+                    (or configure local OAuth keys in Desktop &amp; Updates).
+                  </>
+                )}
               </p>
             </div>
 
-            {activeTab === 'tiktok' ? (
-              <button
-                type="button"
-                onClick={() => handleTikTokOAuth(true)}
-                className="px-4 py-2 rounded bg-[#2563EB] hover:bg-[#3B82F6] text-xs font-semibold text-white cursor-pointer whitespace-nowrap shrink-0"
-              >
-                Connect TikTok Account
-              </button>
-            ) : (
-              <button
-                type="button"
-                disabled={ytSigningIn}
-                onClick={handleYouTubeAuthorize}
-                className="flex items-center gap-2 px-4 py-2 rounded bg-white hover:bg-[#F3F4F6] text-[#1F2937] text-xs font-semibold border border-[#D1D5DB] transition-colors cursor-pointer disabled:opacity-60 whitespace-nowrap shrink-0"
-              >
-                <span>
-                  {ytSigningIn
-                    ? 'Authorizing...'
-                    : ytConnected
-                    ? 'Authorize & Load Graphs'
-                    : 'Sign in with Google'}
-                </span>
-              </button>
-            )}
+            <button
+              type="button"
+              disabled={ytSigningIn}
+              onClick={handleYouTubeAuthorize}
+              className="flex items-center gap-2 px-4 py-2 rounded bg-white hover:bg-[#F3F4F6] text-[#1F2937] text-xs font-semibold border border-[#D1D5DB] transition-colors cursor-pointer disabled:opacity-60 whitespace-nowrap shrink-0"
+            >
+              <span>
+                {ytSigningIn
+                  ? 'Authorizing...'
+                  : ytConnected
+                  ? 'Authorize & Load Graphs'
+                  : 'Sign in with Google'}
+              </span>
+            </button>
           </div>
         )}
 
-        {(ytError && activeTab !== 'tiktok') && (() => {
+        {ytError && (() => {
           const activationUrl = extractYouTubeActivationUrl(ytError);
           if (activationUrl) {
             return (
@@ -890,36 +692,6 @@ export function MetricsDashboard({
             </div>
           );
         })()}
-        {((ttError || ttMetrics?.apiError) && activeTab === 'tiktok') && (
-          <div className="p-4 rounded bg-[#2B1418] border border-[#EF4444]/40 flex items-center justify-between gap-4 flex-wrap">
-            <div className="space-y-1 min-w-0 flex-1">
-              <div className="text-xs font-semibold text-[#FEE2E2]">
-                TikTok Stats Sync Needs Display API Scope Permission
-              </div>
-              <p className="text-xs text-[#FCA5A5] leading-relaxed">
-                {ttError || ttMetrics?.apiError}
-              </p>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <button
-                type="button"
-                onClick={() => handleTikTokOAuth(true, 'stats-only')}
-                className="px-3 py-1.5 rounded bg-[#222229] hover:bg-[#2C2C35] border border-[#34343D] text-xs font-medium text-[#F4F4F7] cursor-pointer whitespace-nowrap"
-              >
-                Try Stats Scope Only
-              </button>
-              <a
-                href="https://developers.tiktok.com/apps/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#EF4444] hover:bg-[#DC2626] text-xs font-semibold text-white whitespace-nowrap"
-              >
-                <span>TikTok Developer Portal</span>
-                <ExternalLink className="w-3 h-3" />
-              </a>
-            </div>
-          </div>
-        )}
 
         {/* Connected View: KPI Strip + Interactive Graphs + Table */}
         {isConnectedActive && (
@@ -928,9 +700,9 @@ export function MetricsDashboard({
             <div className="rounded border border-[#2A2A34] bg-[#18181D] overflow-hidden">
               <div className="px-5 py-3.5 border-b border-[#25252D] flex items-center justify-between gap-4 flex-wrap">
                 <div className="flex items-center gap-3 min-w-0">
-                  {(activeTab === 'tiktok' ? ttMetrics?.profile?.avatarUrl : ytChannel?.avatarUrl) && (
+                  {ytChannel?.avatarUrl && (
                     <img
-                      src={activeTab === 'tiktok' ? ttMetrics?.profile?.avatarUrl : ytChannel?.avatarUrl}
+                      src={ytChannel.avatarUrl}
                       alt="Channel avatar"
                       referrerPolicy="no-referrer"
                       className="w-9 h-9 rounded object-cover border border-[#2E2E37] shrink-0"
@@ -938,23 +710,17 @@ export function MetricsDashboard({
                   )}
                   <div className="min-w-0">
                     <div className="text-sm font-semibold text-[#F4F4F7] truncate">
-                      {activeTab === 'tiktok'
-                        ? ttMetrics?.profile?.displayName || 'TikTok Creator'
-                        : ytChannel?.title || ytUser?.name || 'YouTube Channel'}
+                      {ytChannel?.title || ytUser?.name || 'YouTube Channel'}
                     </div>
                     <div className="text-xs text-[#8E8E9B] flex items-center gap-1.5">
-                      {activeTab !== 'tiktok' && ytChannel?.handle && (
+                      {ytChannel?.handle && (
                         <>
                           <span className="font-mono-tabular">{ytChannel.handle}</span>
                           <span aria-hidden="true">·</span>
                         </>
                       )}
                       <span>
-                        {activeTab === 'tiktok'
-                          ? ttMetrics?.hasStatsScope
-                            ? 'TikTok Display Analytics Active'
-                            : 'TikTok Upload Session Active'
-                          : activeTab === 'youtube-shorts'
+                        {activeTab === 'youtube-shorts'
                           ? 'YouTube Shorts Analytics'
                           : 'YouTube Channel Analytics'}
                       </span>
@@ -963,25 +729,6 @@ export function MetricsDashboard({
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0 flex-wrap">
-                  {activeTab === 'tiktok' && (!ttMetrics?.hasStatsScope || !ttMetrics?.hasVideoListScope) && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => handleTikTokOAuth(true)}
-                        className="px-3 py-1.5 text-xs font-semibold text-white bg-[#2563EB] hover:bg-[#3B82F6] rounded cursor-pointer whitespace-nowrap shrink-0"
-                      >
-                        Sync Creator Stats
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleTikTokOAuth(true, 'stats-only')}
-                        title="Use this if your TikTok app only enabled user.info.stats without video.list"
-                        className="px-3 py-1.5 text-xs font-medium text-[#D4D4DC] bg-[#202028] hover:bg-[#2A2A34] border border-[#2E2E38] rounded cursor-pointer whitespace-nowrap shrink-0"
-                      >
-                        Sync Profile Stats Only
-                      </button>
-                    </>
-                  )}
                   {activeTab === 'youtube-shorts' && ytVideos.length > 0 && (
                     <button
                       type="button"
@@ -993,9 +740,7 @@ export function MetricsDashboard({
                   )}
                   <a
                     href={
-                      activeTab === 'tiktok'
-                        ? 'https://www.tiktok.com/tiktokstudio/analytics'
-                        : ytChannel
+                      ytChannel
                         ? `https://studio.youtube.com/channel/${ytChannel.id}/analytics/tab-overview/period-default`
                         : 'https://studio.youtube.com'
                     }
@@ -1003,81 +748,38 @@ export function MetricsDashboard({
                     rel="noopener noreferrer"
                     className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#D4D4DC] bg-[#202028] hover:bg-[#2A2A34] rounded whitespace-nowrap shrink-0"
                   >
-                    <span>{activeTab === 'tiktok' ? 'TikTok Studio' : 'YouTube Studio'}</span>
+                    <span>YouTube Studio</span>
                     <ExternalLink className="w-3 h-3" />
                   </a>
                 </div>
               </div>
 
-              {activeTab === 'tiktok' ? (
-                ttMetrics?.stats ? (
-                  <div className="grid grid-cols-2 lg:grid-cols-4 divide-y lg:divide-y-0 lg:divide-x divide-[#25252D]">
-                    <div className="px-5 py-3.5">
-                      <div className="text-[11px] text-[#8E8E9B]">Followers</div>
-                      <div className="text-xl font-semibold font-mono-tabular text-[#F4F4F7] mt-0.5">
-                        {formatMetricCount(ttMetrics.stats.followerCount)}
-                      </div>
-                    </div>
-                    <div className="px-5 py-3.5">
-                      <div className="text-[11px] text-[#8E8E9B]">Following</div>
-                      <div className="text-xl font-semibold font-mono-tabular text-[#F4F4F7] mt-0.5">
-                        {formatMetricCount(ttMetrics.stats.followingCount)}
-                      </div>
-                    </div>
-                    <div className="px-5 py-3.5">
-                      <div className="text-[11px] text-[#8E8E9B]">Total Account Likes</div>
-                      <div className="text-xl font-semibold font-mono-tabular text-[#F4F4F7] mt-0.5">
-                        {formatMetricCount(ttMetrics.stats.likesCount)}
-                      </div>
-                    </div>
-                    <div className="px-5 py-3.5">
-                      <div className="text-[11px] text-[#8E8E9B]">Published Videos</div>
-                      <div className="text-xl font-semibold font-mono-tabular text-[#F4F4F7] mt-0.5">
-                        {formatMetricCount(ttMetrics.stats.videoCount)}
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="px-5 py-3.5 space-y-1.5 text-xs text-[#9A9AA6]">
-                    <div>
-                      {ttMetrics?.note ||
-                        'Click Sync Creator Stats above to authorize Display API stats & video history graphs from TikTok.'}
-                    </div>
-                    {ttMetrics?.grantedScopes && ttMetrics.grantedScopes.length > 0 && (
-                      <div className="text-[11px] font-mono text-[#7D7D8A]">
-                        Currently authorized scopes: {ttMetrics.grantedScopes.join(', ')}
-                      </div>
-                    )}
-                  </div>
-                )
-              ) : (
-                <div className="grid grid-cols-2 lg:grid-cols-4 divide-y lg:divide-y-0 lg:divide-x divide-[#25252D]">
-                  <div className="px-5 py-3.5">
-                    <div className="text-[11px] text-[#8E8E9B]">Subscribers</div>
-                    <div className="text-xl font-semibold font-mono-tabular text-[#F4F4F7] mt-0.5">
-                      {formatMetricCount(ytChannel?.subscriberCount)}
-                    </div>
-                  </div>
-                  <div className="px-5 py-3.5">
-                    <div className="text-[11px] text-[#8E8E9B]">Total Channel Views</div>
-                    <div className="text-xl font-semibold font-mono-tabular text-[#F4F4F7] mt-0.5">
-                      {formatMetricCount(ytChannel?.viewCount)}
-                    </div>
-                  </div>
-                  <div className="px-5 py-3.5">
-                    <div className="text-[11px] text-[#8E8E9B]">Total Videos</div>
-                    <div className="text-xl font-semibold font-mono-tabular text-[#F4F4F7] mt-0.5">
-                      {formatMetricCount(ytChannel?.videoCount)}
-                    </div>
-                  </div>
-                  <div className="px-5 py-3.5">
-                    <div className="text-[11px] text-[#8E8E9B]">Avg Engagement (Sample)</div>
-                    <div className="text-xl font-semibold font-mono-tabular text-[#60A5FA] mt-0.5">
-                      {chartSeries.length > 0 ? `${chartStats.avgEngPct.toFixed(1)}%` : '—'}
-                    </div>
+              <div className="grid grid-cols-2 lg:grid-cols-4 divide-y lg:divide-y-0 lg:divide-x divide-[#25252D]">
+                <div className="px-5 py-3.5">
+                  <div className="text-[11px] text-[#8E8E9B]">Subscribers</div>
+                  <div className="text-xl font-semibold font-mono-tabular text-[#F4F4F7] mt-0.5">
+                    {formatMetricCount(ytChannel?.subscriberCount)}
                   </div>
                 </div>
-              )}
+                <div className="px-5 py-3.5">
+                  <div className="text-[11px] text-[#8E8E9B]">Total Channel Views</div>
+                  <div className="text-xl font-semibold font-mono-tabular text-[#F4F4F7] mt-0.5">
+                    {formatMetricCount(ytChannel?.viewCount)}
+                  </div>
+                </div>
+                <div className="px-5 py-3.5">
+                  <div className="text-[11px] text-[#8E8E9B]">Total Videos</div>
+                  <div className="text-xl font-semibold font-mono-tabular text-[#F4F4F7] mt-0.5">
+                    {formatMetricCount(ytChannel?.videoCount)}
+                  </div>
+                </div>
+                <div className="px-5 py-3.5">
+                  <div className="text-[11px] text-[#8E8E9B]">Avg Engagement (Sample)</div>
+                  <div className="text-xl font-semibold font-mono-tabular text-[#60A5FA] mt-0.5">
+                    {chartSeries.length > 0 ? `${chartStats.avgEngPct.toFixed(1)}%` : '—'}
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* Interactive Graphs Row (Primary Trend + Distribution Panel) */}
@@ -1211,9 +913,7 @@ export function MetricsDashboard({
                           No video data available for this graph yet
                         </div>
                         <p className="text-[11px] text-[#8E8E9B] max-w-md">
-                          {activeTab === 'tiktok'
-                            ? 'Authorize TikTok Display permissions (Sync Creator Stats) or publish a video from CHMR to plot your performance curve.'
-                            : activeTab === 'youtube-shorts' && ytVideos.length > 0
+                          {activeTab === 'youtube-shorts' && ytVideos.length > 0
                             ? 'No #Shorts or vertical clips under 60s were found in your latest uploads. Toggle "Include All Uploads" above to inspect long-form graphs.'
                             : 'Upload a video or Short from the CHMR Studio to begin tracking real performance trends here.'}
                         </p>
@@ -1440,17 +1140,15 @@ export function MetricsDashboard({
                   </div>
                 )}
 
-                {/* Right Window: Engagement / Format Distribution + TikTok Publish Checker */}
+                {/* Right Window: Format & Engagement Distribution */}
                 {metricsLayout.expandedPanel !== 'graph' && (
                   <div className="flex-1 min-w-0 rounded border border-[#2A2A34] bg-[#18181D] p-5 flex flex-col justify-between space-y-4">
-                {activeTab === 'tiktok' ? (
-                  <>
-                    <div className="space-y-4">
+                    <div className="space-y-5">
                       <div className="flex items-start justify-between gap-2">
                         <div>
-                          <h2 className="text-sm font-semibold text-[#F4F4F7]">Interaction Breakdown</h2>
+                          <h2 className="text-sm font-semibold text-[#F4F4F7]">Format &amp; Engagement Mix</h2>
                           <p className="text-[11px] text-[#8E8E9B] mt-0.5">
-                            Proportional engagement mix across fetched TikTok videos
+                            Shorts vs Long-Form share across your recent {ytVideos.length} uploads
                           </p>
                         </div>
                         <button
@@ -1481,177 +1179,64 @@ export function MetricsDashboard({
                         </button>
                       </div>
 
-                      {chartSeries.length > 0 ? (
-                        <div className="space-y-3 pt-1">
-                          {(() => {
-                            const likes = chartSeries.reduce((s, p) => s + p.likes, 0);
-                            const comments = chartSeries.reduce((s, p) => s + p.comments, 0);
-                            const shares = chartSeries.reduce((s, p) => s + p.shares, 0);
-                            const sum = Math.max(1, likes + comments + shares);
-                            const rows = [
-                              { label: 'Likes', val: likes, pct: (likes / sum) * 100, color: '#3B82F6' },
-                              { label: 'Comments', val: comments, pct: (comments / sum) * 100, color: '#10B981' },
-                              { label: 'Shares', val: shares, pct: (shares / sum) * 100, color: '#F59E0B' },
-                            ];
-                            return rows.map((r) => (
-                              <div key={r.label} className="space-y-1">
-                                <div className="flex items-center justify-between text-xs">
-                                  <span className="text-[#D4D4DC]">{r.label}</span>
-                                  <span className="font-mono-tabular text-[#9A9AA6]">
-                                    {r.val.toLocaleString()} ({r.pct.toFixed(0)}%)
-                                  </span>
-                                </div>
-                                <div className="h-2 rounded-sm bg-[#121216] overflow-hidden">
-                                  <div
-                                    className="h-full rounded-sm"
-                                    style={{ width: `${Math.max(2, r.pct)}%`, backgroundColor: r.color }}
-                                  />
-                                </div>
-                              </div>
-                            ));
-                          })()}
-                        </div>
-                      ) : (
-                        <div className="py-4 text-xs text-[#8E8E9B]">
-                          Sync video list permissions to graph TikTok likes, comments, and shares distribution.
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Direct Upload Status Lookup */}
-                    <div className="pt-4 border-t border-[#25252D] space-y-2.5">
-                      <div>
-                        <div className="text-xs font-semibold text-[#F4F4F7]">Verify Upload Publish Status</div>
-                        <p className="text-[11px] text-[#8E8E9B] mt-0.5">
-                          Check live TikTok processing for any upload ID sent from CHMR.
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="text"
-                          value={publishIdInput}
-                          onChange={(e) => setPublishIdInput(e.target.value)}
-                          placeholder="TikTok publish_id..."
-                          className="flex-1 min-w-0 bg-[#121216] border border-[#2B2B34] focus:border-[#3B82F6] rounded px-2.5 py-1.5 text-xs font-mono-tabular text-white outline-none"
-                        />
-                        <button
-                          type="button"
-                          disabled={publishStatusLoading}
-                          onClick={handleCheckPublishStatus}
-                          className="px-3 py-1.5 rounded bg-[#232329] hover:bg-[#2E2E36] border border-[#34343D] text-xs font-medium text-[#EAEAF0] cursor-pointer disabled:opacity-50 whitespace-nowrap shrink-0"
-                        >
-                          {publishStatusLoading ? 'Checking...' : 'Check'}
-                        </button>
-                      </div>
-                      {publishStatusResult && (
-                        <div className="px-2.5 py-2 rounded bg-[#121216] border border-[#272732] flex items-center gap-2 text-[11px]">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-[#10B981] shrink-0" />
-                          <span className="font-mono-tabular text-[#F4F4F7] truncate">
-                            {publishStatusResult.status}
-                          </span>
-                        </div>
-                      )}
-                      {publishStatusError && (
-                        <div className="text-[11px] text-[#FCA5A5]">{publishStatusError}</div>
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <div className="space-y-5">
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <h2 className="text-sm font-semibold text-[#F4F4F7]">Format &amp; Engagement Mix</h2>
-                        <p className="text-[11px] text-[#8E8E9B] mt-0.5">
-                          Shorts vs Long-Form share across your recent {ytVideos.length} uploads
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setMetricsLayout((prev) => ({
-                            ...prev,
-                            expandedPanel: prev.expandedPanel === 'breakdown' ? 'none' : 'breakdown',
-                          }))
-                        }
-                        title={
-                          metricsLayout.expandedPanel === 'breakdown'
-                            ? 'Restore Split View'
-                            : 'Expand Breakdown Window'
-                        }
-                        aria-label="Toggle expand breakdown window"
-                        className={`p-1 rounded-sm cursor-pointer shrink-0 ${
-                          metricsLayout.expandedPanel === 'breakdown'
-                            ? 'bg-[#2563EB]/25 text-[#93C5FD]'
-                            : 'text-[#8E8E9B] hover:text-white bg-[#121216] border border-[#262630]'
-                        }`}
-                      >
-                        {metricsLayout.expandedPanel === 'breakdown' ? (
-                          <Minimize2 className="w-3 h-3" />
-                        ) : (
-                          <Maximize2 className="w-3 h-3" />
-                        )}
-                      </button>
-                    </div>
-
-                    {/* Shorts vs Long-Form View Share */}
-                    <div className="space-y-3">
-                      <div className="space-y-1">
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="text-[#D4D4DC]">
-                            YouTube Shorts ({ytFormatSplit.shortsCount})
-                          </span>
-                          <span className="font-mono-tabular text-[#93C5FD]">
-                            {formatMetricCount(ytFormatSplit.shortsViews)} views ({ytFormatSplit.shortsSharePct}%)
-                          </span>
-                        </div>
-                        <div className="h-2.5 rounded-sm bg-[#121216] overflow-hidden">
-                          <div
-                            className="h-full bg-[#3B82F6] rounded-sm"
-                            style={{ width: `${Math.max(2, ytFormatSplit.shortsSharePct)}%` }}
-                          />
-                        </div>
-                      </div>
-
-                      <div className="space-y-1">
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="text-[#D4D4DC]">
-                            Standard Videos ({ytFormatSplit.standardCount})
-                          </span>
-                          <span className="font-mono-tabular text-[#A7F3D0]">
-                            {formatMetricCount(ytFormatSplit.stdViews)} views ({ytFormatSplit.stdSharePct}%)
-                          </span>
-                        </div>
-                        <div className="h-2.5 rounded-sm bg-[#121216] overflow-hidden">
-                          <div
-                            className="h-full bg-[#10B981] rounded-sm"
-                            style={{ width: `${Math.max(2, ytFormatSplit.stdSharePct)}%` }}
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Engagement Breakdown in Current View */}
-                    <div className="pt-4 border-t border-[#25252D] space-y-2.5">
-                      <div className="text-xs font-semibold text-[#E4E4EC]">
-                        Active Filter Summary ({filteredPoints.length} videos)
-                      </div>
-                      <div className="grid grid-cols-2 gap-3 text-xs">
-                        <div className="p-2.5 rounded bg-[#121216] border border-[#25252D]">
-                          <div className="text-[10px] text-[#8E8E9B]">Sample Views</div>
-                          <div className="text-sm font-mono-tabular font-semibold text-[#F4F4F7] mt-0.5">
-                            {formatMetricCount(chartStats.totalViews)}
+                      {/* Shorts vs Long-Form View Share */}
+                      <div className="space-y-3">
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-[#D4D4DC]">
+                              YouTube Shorts ({ytFormatSplit.shortsCount})
+                            </span>
+                            <span className="font-mono-tabular text-[#93C5FD]">
+                              {formatMetricCount(ytFormatSplit.shortsViews)} views ({ytFormatSplit.shortsSharePct}%)
+                            </span>
+                          </div>
+                          <div className="h-2.5 rounded-sm bg-[#121216] overflow-hidden">
+                            <div
+                              className="h-full bg-[#3B82F6] rounded-sm"
+                              style={{ width: `${Math.max(2, ytFormatSplit.shortsSharePct)}%` }}
+                            />
                           </div>
                         </div>
-                        <div className="p-2.5 rounded bg-[#121216] border border-[#25252D]">
-                          <div className="text-[10px] text-[#8E8E9B]">Likes + Comments</div>
-                          <div className="text-sm font-mono-tabular font-semibold text-[#F4F4F7] mt-0.5">
-                            {formatMetricCount(chartStats.totalLikes + chartStats.totalComments)}
+
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-[#D4D4DC]">
+                              Standard Videos ({ytFormatSplit.standardCount})
+                            </span>
+                            <span className="font-mono-tabular text-[#A7F3D0]">
+                              {formatMetricCount(ytFormatSplit.stdViews)} views ({ytFormatSplit.stdSharePct}%)
+                            </span>
+                          </div>
+                          <div className="h-2.5 rounded-sm bg-[#121216] overflow-hidden">
+                            <div
+                              className="h-full bg-[#10B981] rounded-sm"
+                              style={{ width: `${Math.max(2, ytFormatSplit.stdSharePct)}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Engagement Breakdown in Current View */}
+                      <div className="pt-4 border-t border-[#25252D] space-y-2.5">
+                        <div className="text-xs font-semibold text-[#E4E4EC]">
+                          Active Filter Summary ({filteredPoints.length} videos)
+                        </div>
+                        <div className="grid grid-cols-2 gap-3 text-xs">
+                          <div className="p-2.5 rounded bg-[#121216] border border-[#25252D]">
+                            <div className="text-[10px] text-[#8E8E9B]">Sample Views</div>
+                            <div className="text-sm font-mono-tabular font-semibold text-[#F4F4F7] mt-0.5">
+                              {formatMetricCount(chartStats.totalViews)}
+                            </div>
+                          </div>
+                          <div className="p-2.5 rounded bg-[#121216] border border-[#25252D]">
+                            <div className="text-[10px] text-[#8E8E9B]">Likes + Comments</div>
+                            <div className="text-sm font-mono-tabular font-semibold text-[#F4F4F7] mt-0.5">
+                              {formatMetricCount(chartStats.totalLikes + chartStats.totalComments)}
+                            </div>
                           </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                )}
                   </div>
                 )}
               </div>
@@ -1670,7 +1255,7 @@ export function MetricsDashboard({
                   </h2>
                   <div className="flex items-center gap-2.5">
                     <span className="text-[11px] text-[#8E8E9B] hidden sm:inline">
-                      Click external icon to view directly on {activeTab === 'tiktok' ? 'TikTok' : 'YouTube'}
+                      Click external icon to view directly on YouTube
                     </span>
                     <div className="flex items-center gap-0.5 p-0.5 bg-[#121216] border border-[#262630] rounded">
                       <button
@@ -1815,14 +1400,6 @@ export function MetricsDashboard({
                             {formatMetricCount(pt.comments)}
                           </div>
                         </div>
-                        {activeTab === 'tiktok' && (
-                          <div>
-                            <div className="text-[10px] text-[#7D7D8A]">Shares</div>
-                            <div className="text-xs font-mono-tabular text-[#E4E4EC]">
-                              {formatMetricCount(pt.shares)}
-                            </div>
-                          </div>
-                        )}
                         <div className="hidden sm:block min-w-[54px]">
                           <div className="text-[10px] text-[#7D7D8A]">Eng.</div>
                           <div className="text-xs font-mono-tabular text-[#93C5FD]">

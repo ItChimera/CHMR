@@ -276,7 +276,7 @@ export interface SequenceSettings {
   width: number;
   height: number;
   fps: number;
-  aspectPreset: '16:9-hd' | '16:9-4k' | '9:16-vertical' | '1:1-square' | '4:5-social';
+  aspectPreset: '16:9-hd' | '16:9-1440p' | '16:9-4k' | '9:16-vertical' | '1:1-square' | '4:5-social';
   colorSpace: 'Rec.709' | 'Rec.2100 HLG' | 'S-Log3';
   hdrMode: boolean;
   proxyMode: boolean;
@@ -308,7 +308,7 @@ export interface ProjectVersion {
   clips: TimelineClip[];
 }
 
-export type ExportDestination = 'download' | 'youtube' | 'youtube-shorts' | 'tiktok';
+export type ExportDestination = 'download' | 'youtube' | 'youtube-shorts';
 
 export interface ExportSettings {
   filename: string;

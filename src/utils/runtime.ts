@@ -11,7 +11,7 @@ const INITIAL_BASE_DIR: string = (() => {
   if (typeof window !== 'undefined') {
     const pathname = window.location.pathname || '/';
     // Strip known virtual SPA leaf routes if loaded directly
-    const cleaned = pathname.replace(/\/(terms|terms-of-service|privacy|privacy-policy|auth\/tiktok\/callback)\/?$/i, '/');
+    const cleaned = pathname.replace(/\/(terms|terms-of-service|privacy|privacy-policy)\/?$/i, '/');
     if (cleaned.endsWith('/')) return cleaned;
     const lastSlash = cleaned.lastIndexOf('/');
     return lastSlash >= 0 ? cleaned.slice(0, lastSlash + 1) : '/';
@@ -52,4 +52,4 @@ export async function parseJsonResponse<T = Record<string, unknown>>(res: Respon
 }
 
 export const STATIC_BACKEND_NOTICE =
-  'This site is running in static browser mode (no backend server). Timeline editing, chroma key, color grading, keyframes, audio mixing, and MP4/WebM export all run 100% locally in your browser. Run the optional local server (npm run dev) to enable server-proxied AI or TikTok features.';
+  'This site is running in static browser mode (no backend server). Timeline editing, chroma key, color grading, keyframes, audio mixing, and MP4/WebM export all run 100% locally in your browser. Run the optional local server (npm run dev) to enable server-proxied AI features.';

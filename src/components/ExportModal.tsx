@@ -25,21 +25,9 @@ import {
   Track,
 } from '../types/editor';
 import { exportTimelineVideo } from '../utils/exporter';
-import { assetUrl, parseJsonResponse, STATIC_BACKEND_NOTICE } from '../utils/runtime';
+import { assetUrl } from '../utils/runtime';
 import { formatTimecode, generateId } from '../utils/timecode';
 import { buildFpsSelectOptions, formatFpsLabel } from '../utils/videoMetadata';
-import {
-  disconnectTikTok,
-  fetchTikTokMetrics,
-  fetchTikTokPublishStatus,
-  fetchTikTokStatus as fetchTikTokAccountStatus,
-  getTikTokAuthHeaders,
-  OAUTH_BROADCAST_CHANNEL,
-  setStoredTikTokSealedSession,
-  TIKTOK_SEALED_SESSION_KEY,
-  TikTokMetricsResponse,
-  TikTokPublishStatusResult,
-} from '../utils/tiktokAuth';
 import {
   YOUTUBE_TEST_USERS_URL,
   YouTubeChannelInfo,
@@ -60,8 +48,7 @@ interface ExportModalProps {
   onClose: () => void;
   onNavigate?: (path: string) => void;
   onAccountStatusChanged?: () => void;
-  onOpenMetrics?: (platform: 'youtube' | 'youtube-shorts' | 'tiktok') => void;
-  onTikTokPublished?: (publishId: string) => void;
+  onOpenMetrics?: (platform: 'youtube' | 'youtube-shorts') => void;
   sequence: SequenceSettings;
   sourceVideoFps?: number | null;
   tracks: Track[];
@@ -82,16 +69,14 @@ const DESTINATION_CARDS: Array<{
   bitrate: number;
 }> = [
   { id: 'download', label: 'Local File', spec: 'MP4 / WebM / WAV / EDL', width: 1920, height: 1080, bitrate: 8 },
-  { id: 'youtube', label: 'YouTube', spec: '1920×1080 · 16:9 · Direct', width: 1920, height: 1080, bitrate: 12 },
+  { id: 'youtube', label: 'YouTube', spec: '1080p / 1440p / 4K · Direct', width: 1920, height: 1080, bitrate: 12 },
   { id: 'youtube-shorts', label: 'YouTube Shorts', spec: '1080×1920 · 9:16 · #Shorts', width: 1080, height: 1920, bitrate: 10 },
-  { id: 'tiktok', label: 'TikTok', spec: '1080×1920 · 9:16 · Direct', width: 1080, height: 1920, bitrate: 10 },
 ];
 
 const QUICK_HASHTAGS: Record<ExportDestination, string[]> = {
   download: ['#videoediting', '#filmmaking', '#chmr'],
   youtube: ['#youtube', '#filmmaking', '#cinematography', '#vlog'],
   'youtube-shorts': ['#Shorts', '#youtubeshorts', '#trending', '#viral'],
-  tiktok: ['#fyp', '#foryou', '#tiktok', '#capcut', '#videoedit'],
 };
 
 const FORMAT_OPTIONS: Array<{ value: ExportSettings['format']; label: string; ext: string }> = [
@@ -111,7 +96,6 @@ export function ExportModal({
   onNavigate,
   onAccountStatusChanged,
   onOpenMetrics,
-  onTikTokPublished,
   sequence,
   sourceVideoFps,
   tracks,
@@ -127,7 +111,7 @@ export function ExportModal({
     width: sequence.width === 3840 ? 1920 : sequence.width,
     height: sequence.height === 2160 ? 1080 : sequence.height,
     fps: sequence.fps,
-    bitrateMbps: 8,
+    bitrateMbps: sequence.width === 2560 ? 16 : 8,
     bitrateMode: 'vbr',
     range: 'entire',
     format: 'mp4-h264',
@@ -138,7 +122,6 @@ export function ExportModal({
     privacyStatus: 'private',
   });
 
-  const [tiktokPrivacy, setTiktokPrivacy] = useState<'SELF_ONLY' | 'MUTUAL_FOLLOW_FRIENDS' | 'FOLLOWER_OF_CREATOR' | 'PUBLIC_TO_EVERYONE'>('SELF_ONLY');
   const [confirmDirectPublish, setConfirmDirectPublish] = useState(false);
 
   const [ytUser, setYtUser] = useState<{ name: string; email: string; avatarUrl?: string } | null>(null);
@@ -147,16 +130,6 @@ export function ExportModal({
   const [ytHasUploadToken, setYtHasUploadToken] = useState(false);
   const [ytConnected, setYtConnected] = useState(false);
   const [ytSigningIn, setYtSigningIn] = useState(false);
-
-  const [tiktokStatus, setTiktokStatus] = useState<{
-    configured: boolean;
-    connected: boolean;
-    callbackUrl: string;
-    user: { displayName: string; avatarUrl?: string } | null;
-  }>({ configured: false, connected: false, callbackUrl: '', user: null });
-  const [tiktokMetrics, setTiktokMetrics] = useState<TikTokMetricsResponse | null>(null);
-  const [tiktokLivePublishStatus, setTiktokLivePublishStatus] = useState<TikTokPublishStatusResult | null>(null);
-  const [checkingPublishStatus, setCheckingPublishStatus] = useState(false);
 
   const [queue, setQueue] = useState<RenderQueueJob[]>([]);
   const [status, setStatus] = useState<'idle' | 'rendering' | 'uploading' | 'done' | 'error'>('idle');
@@ -169,21 +142,6 @@ export function ExportModal({
   const [copiedCaption, setCopiedCaption] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
-  const popupPollRef = useRef<number | null>(null);
-
-  const fetchTikTokStatus = async () => {
-    const data = await fetchTikTokAccountStatus();
-    if (data) {
-      setTiktokStatus(data);
-      onAccountStatusChanged?.();
-      if (data.connected) {
-        const metrics = await fetchTikTokMetrics();
-        setTiktokMetrics(metrics);
-      } else {
-        setTiktokMetrics(null);
-      }
-    }
-  };
 
   useEffect(() => {
     if (!isOpen) return;
@@ -197,7 +155,12 @@ export function ExportModal({
             height: sequence.height === 2160 ? 1080 : sequence.height,
           }
         : {}),
-      bitrateMbps: sequence.fps >= 90 && s.bitrateMbps < 24 ? 24 : s.bitrateMbps,
+      bitrateMbps:
+        sequence.fps >= 90 && s.bitrateMbps < 24
+          ? 24
+          : sequence.width === 2560 && s.bitrateMbps < 16
+          ? 16
+          : s.bitrateMbps,
     }));
 
     const loadYouTubeChannelDetails = async (token: string | null) => {
@@ -237,63 +200,8 @@ export function ExportModal({
       }
     );
 
-    fetchTikTokStatus();
-
-    const handleOAuthMessage = (event: MessageEvent) => {
-      const origin = event.origin;
-      if (
-        origin !== window.location.origin &&
-        !origin.endsWith('.ai.studio') &&
-        !origin.endsWith('.run.app') &&
-        !origin.includes('localhost')
-      ) {
-        return;
-      }
-      if (event.data?.type === 'OAUTH_AUTH_SUCCESS' && event.data?.provider === 'tiktok') {
-        if (typeof event.data?.sessionToken === 'string') {
-          setStoredTikTokSealedSession(event.data.sessionToken);
-        }
-        fetchTikTokStatus();
-      }
-    };
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key === TIKTOK_SEALED_SESSION_KEY) {
-        fetchTikTokStatus();
-      }
-    };
-    const handleFocus = () => {
-      fetchTikTokStatus();
-    };
-    let bc: BroadcastChannel | null = null;
-    if (typeof BroadcastChannel !== 'undefined') {
-      try {
-        bc = new BroadcastChannel(OAUTH_BROADCAST_CHANNEL);
-        bc.onmessage = (event) => {
-          if (event.data?.type === 'OAUTH_AUTH_SUCCESS' && event.data?.provider === 'tiktok') {
-            if (typeof event.data?.sessionToken === 'string') {
-              setStoredTikTokSealedSession(event.data.sessionToken);
-            }
-            fetchTikTokStatus();
-          }
-        };
-      } catch {
-        bc = null;
-      }
-    }
-    window.addEventListener('message', handleOAuthMessage);
-    window.addEventListener('storage', handleStorage);
-    window.addEventListener('focus', handleFocus);
-
     return () => {
       unsub();
-      window.removeEventListener('message', handleOAuthMessage);
-      window.removeEventListener('storage', handleStorage);
-      window.removeEventListener('focus', handleFocus);
-      bc?.close();
-      if (popupPollRef.current !== null) {
-        window.clearInterval(popupPollRef.current);
-        popupPollRef.current = null;
-      }
     };
   }, [isOpen, sequence.fps, sequence.width, sequence.height]);
 
@@ -394,47 +302,6 @@ export function ExportModal({
     }
   };
 
-  const handleTikTokConnect = async (includeStats = false) => {
-    setErrorMessage(null);
-    try {
-      const query = new URLSearchParams({
-        origin: window.location.origin,
-        ...(includeStats ? { includeStats: '1' } : {}),
-      });
-      const res = await fetch(`/api/auth/tiktok/url?${query.toString()}`, {
-        credentials: 'include',
-      });
-      const data = await parseJsonResponse<{ url?: string; error?: string }>(res);
-      if (!data) {
-        setErrorMessage(STATIC_BACKEND_NOTICE);
-        return;
-      }
-      if (!res.ok || !data.url) {
-        setErrorMessage(data.error || 'Unable to start TikTok authorization.');
-        return;
-      }
-      const popup = window.open(data.url, 'tiktok_oauth', 'width=600,height=720');
-      if (!popup) {
-        setErrorMessage('Popup was blocked. Allow popups once to authorize and save your TikTok account.');
-        return;
-      }
-      if (popupPollRef.current !== null) {
-        window.clearInterval(popupPollRef.current);
-      }
-      popupPollRef.current = window.setInterval(() => {
-        if (popup.closed) {
-          if (popupPollRef.current !== null) {
-            window.clearInterval(popupPollRef.current);
-            popupPollRef.current = null;
-          }
-          fetchTikTokStatus();
-        }
-      }, 500);
-    } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : 'Failed to connect TikTok.');
-    }
-  };
-
   const runSingleExport = async (cfg: ExportSettings, jobId?: string) => {
     const controller = new AbortController();
     abortRef.current = controller;
@@ -463,18 +330,6 @@ export function ExportModal({
             setStatus('error');
             return;
           }
-        }
-      }
-      if (dest === 'tiktok') {
-        if (!tiktokStatus.connected) {
-          setErrorMessage('Connect your TikTok account above to publish directly, or choose Local File to download your 9:16 video.');
-          setStatus('error');
-          return;
-        }
-        if (!confirmDirectPublish) {
-          setErrorMessage('Please confirm the direct upload checkbox before publishing to TikTok.');
-          setStatus('error');
-          return;
         }
       }
     }
@@ -532,57 +387,6 @@ export function ExportModal({
           url: uploaded.url,
           id: uploaded.videoId,
         });
-      } else if (!jobId && dest === 'tiktok') {
-        setStatus('uploading');
-        setUploadProgress(35);
-        const fullCaption = [
-          (cfg.publishTitle || '').trim(),
-          formatSocialCaption(cfg.publishDescription || '', cfg.hashtags || '', false).fullText,
-        ]
-          .filter(Boolean)
-          .join(' — ');
-
-        const publishRes = await fetch('/api/publish/tiktok', {
-          method: 'POST',
-          credentials: 'include',
-          headers: {
-            ...getTikTokAuthHeaders(),
-            'Content-Type': blob.type || 'video/webm',
-            'x-tiktok-caption': encodeURIComponent(fullCaption || cfg.filename),
-            'x-tiktok-privacy': tiktokPrivacy,
-            'x-tiktok-mime': blob.type || 'video/webm',
-          },
-          body: blob,
-        });
-        const refreshed = publishRes.headers.get('x-chmr-tiktok-session-refresh');
-        if (refreshed) {
-          setStoredTikTokSealedSession(refreshed);
-        }
-        const publishData = await parseJsonResponse<{
-          publishId?: string;
-          shareUrl?: string;
-          error?: string;
-        }>(publishRes);
-        if (!publishData) {
-          throw new Error(STATIC_BACKEND_NOTICE);
-        }
-        if (!publishRes.ok) {
-          throw new Error(publishData.error || 'TikTok publish failed.');
-        }
-        setUploadProgress(100);
-        setTiktokLivePublishStatus(null);
-        if (publishData.publishId) {
-          try {
-            localStorage.setItem('chmr_last_tiktok_publish_id', publishData.publishId);
-          } catch {
-            // ignore storage errors
-          }
-          onTikTokPublished?.(publishData.publishId);
-        }
-        setPublishedResult({
-          platform: 'TikTok',
-          id: publishData.publishId,
-        });
       }
 
       if (jobId) {
@@ -628,8 +432,6 @@ export function ExportModal({
       ? 'Render & Publish to YouTube'
       : destination === 'youtube-shorts'
       ? 'Render & Publish Short'
-      : destination === 'tiktok'
-      ? 'Render & Publish to TikTok'
       : 'Export Now';
 
   return (
@@ -653,7 +455,7 @@ export function ExportModal({
           {/* Destination Cards */}
           <div>
             <label className="block text-xs text-[#A1A1AF] mb-1.5">Export Destination</label>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               {DESTINATION_CARDS.map((card) => {
                 const active = destination === card.id;
                 return (
@@ -869,97 +671,6 @@ export function ExportModal({
             </div>
           )}
 
-          {destination === 'tiktok' && (
-            <div className="p-3 rounded border border-[#2B2B36] bg-[#131318] space-y-2">
-              <div className="flex items-center justify-between gap-3 flex-wrap">
-                {tiktokStatus.connected && tiktokStatus.user ? (
-                  <>
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      {tiktokStatus.user.avatarUrl ? (
-                        <img
-                          src={tiktokStatus.user.avatarUrl}
-                          alt={tiktokStatus.user.displayName}
-                          referrerPolicy="no-referrer"
-                          className="w-7 h-7 rounded object-cover border border-[#2E2E37] shrink-0"
-                        />
-                      ) : (
-                        <span className="w-2.5 h-2.5 rounded-full bg-[#10B981] shrink-0" />
-                      )}
-                      <div className="min-w-0">
-                        <div className="text-xs font-medium text-[#E4E4EC] truncate">
-                          TikTok Saved · {tiktokStatus.user.displayName}
-                        </div>
-                        <div className="text-[11px] font-mono-tabular text-[#8E8E9B] truncate">
-                          {tiktokMetrics?.stats
-                            ? `${(tiktokMetrics.stats.followerCount || 0).toLocaleString()} followers · ${(tiktokMetrics.stats.likesCount || 0).toLocaleString()} likes · ${(tiktokMetrics.stats.videoCount || 0).toLocaleString()} videos`
-                            : 'Uploads directly inside CHMR · Auto-renews session'}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      {tiktokMetrics && !tiktokMetrics.hasStatsScope && (
-                        <button
-                          type="button"
-                          onClick={() => handleTikTokConnect(true)}
-                          className="px-2.5 py-1 text-[11px] font-semibold text-white bg-[#2563EB] hover:bg-[#3B82F6] rounded cursor-pointer whitespace-nowrap"
-                        >
-                          Sync Stats
-                        </button>
-                      )}
-                      {onOpenMetrics && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            onClose();
-                            onOpenMetrics('tiktok');
-                          }}
-                          className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-[#D4D4DC] bg-[#222229] hover:bg-[#2C2C35] rounded cursor-pointer"
-                        >
-                          <BarChart3 className="w-3 h-3 text-[#60A5FA]" />
-                          <span>Metrics</span>
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          await disconnectTikTok();
-                          fetchTikTokStatus();
-                        }}
-                        className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium text-[#D4D4DC] bg-[#222229] hover:bg-[#2C2C35] rounded cursor-pointer"
-                      >
-                        <LogOut className="w-3 h-3" />
-                        Switch / Disconnect
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-xs font-medium text-[#E4E4EC]">
-                        Save your TikTok account for direct in-app uploads
-                      </div>
-                      <div className="text-[11px] text-[#8E8E9B] mt-0.5">
-                        One-time sign-in authorizes CHMR and saves your account—future uploads stay right inside this window.
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleTikTokConnect(false)}
-                      className="px-3 py-1.5 rounded bg-[#0F0F12] hover:bg-[#1E1E24] border border-[#3F3F4E] text-xs font-semibold text-white cursor-pointer shrink-0"
-                    >
-                      Connect TikTok Account
-                    </button>
-                  </>
-                )}
-              </div>
-              {!tiktokStatus.configured && (
-                <p className="text-[11px] text-[#9A9AA6]">
-                  TikTok direct posting requires <span className="font-mono text-[#D4D4DC]">TIKTOK_CLIENT_KEY</span> and <span className="font-mono text-[#D4D4DC]">TIKTOK_CLIENT_SECRET</span> in Secrets (redirect URI: <span className="font-mono text-[#D4D4DC]">{tiktokStatus.callbackUrl || '/auth/tiktok/callback'}</span>). You can still download your 9:16 vertical video via Local File.
-                </p>
-              )}
-            </div>
-          )}
-
           {/* Post Title, Description, Hashtags & Visibility */}
           <div className="p-3.5 rounded border border-[#2B2B34] bg-[#131318] space-y-3">
             <div className="flex items-center justify-between gap-2">
@@ -992,35 +703,21 @@ export function ExportModal({
 
               <div>
                 <label className="block text-[11px] text-[#9A9AA6] mb-1">Visibility</label>
-                {destination === 'tiktok' ? (
-                  <select
-                    disabled={status === 'rendering' || status === 'uploading'}
-                    value={tiktokPrivacy}
-                    onChange={(e) => setTiktokPrivacy(e.target.value as typeof tiktokPrivacy)}
-                    className="w-full bg-[#101014] border border-[#2B2B34] rounded px-2.5 py-1.5 text-xs text-[#E4E4EC] outline-none"
-                  >
-                    <option value="SELF_ONLY">Private (Only Me)</option>
-                    <option value="MUTUAL_FOLLOW_FRIENDS">Friends</option>
-                    <option value="FOLLOWER_OF_CREATOR">Followers</option>
-                    <option value="PUBLIC_TO_EVERYONE">Public</option>
-                  </select>
-                ) : (
-                  <select
-                    disabled={status === 'rendering' || status === 'uploading'}
-                    value={settings.privacyStatus || 'private'}
-                    onChange={(e) =>
-                      setSettings((s) => ({
-                        ...s,
-                        privacyStatus: e.target.value as 'public' | 'unlisted' | 'private',
-                      }))
-                    }
-                    className="w-full bg-[#101014] border border-[#2B2B34] rounded px-2.5 py-1.5 text-xs text-[#E4E4EC] outline-none"
-                  >
-                    <option value="private">Private</option>
-                    <option value="unlisted">Unlisted</option>
-                    <option value="public">Public</option>
-                  </select>
-                )}
+                <select
+                  disabled={status === 'rendering' || status === 'uploading'}
+                  value={settings.privacyStatus || 'private'}
+                  onChange={(e) =>
+                    setSettings((s) => ({
+                      ...s,
+                      privacyStatus: e.target.value as 'public' | 'unlisted' | 'private',
+                    }))
+                  }
+                  className="w-full bg-[#101014] border border-[#2B2B34] rounded px-2.5 py-1.5 text-xs text-[#E4E4EC] outline-none"
+                >
+                  <option value="private">Private</option>
+                  <option value="unlisted">Unlisted</option>
+                  <option value="public">Public</option>
+                </select>
               </div>
             </div>
 
@@ -1031,7 +728,7 @@ export function ExportModal({
                 disabled={status === 'rendering' || status === 'uploading'}
                 value={settings.publishDescription || ''}
                 onChange={(e) => setSettings((s) => ({ ...s, publishDescription: e.target.value }))}
-                placeholder="Write a description for your YouTube video, Short, or TikTok post..."
+                placeholder="Write a description for your YouTube video or Short..."
                 className="w-full bg-[#101014] border border-[#2B2B34] focus:border-[#3B82F6] rounded px-2.5 py-1.5 text-xs text-white outline-none resize-none"
               />
             </div>
@@ -1048,7 +745,7 @@ export function ExportModal({
                 disabled={status === 'rendering' || status === 'uploading'}
                 value={settings.hashtags || ''}
                 onChange={(e) => setSettings((s) => ({ ...s, hashtags: e.target.value }))}
-                placeholder="#filmmaking #shorts #fyp"
+                placeholder="#filmmaking #shorts #youtube"
                 className="w-full bg-[#101014] border border-[#2B2B34] focus:border-[#3B82F6] rounded px-2.5 py-1.5 text-xs text-white outline-none"
               />
               <div className="flex flex-wrap gap-1.5 mt-1.5">
@@ -1074,7 +771,7 @@ export function ExportModal({
                   className="rounded border-[#383844] bg-[#101014] accent-[#3B82F6]"
                 />
                 <span>
-                  Confirm direct upload to {destination === 'youtube-shorts' ? 'YouTube Shorts' : destination === 'youtube' ? 'YouTube' : 'TikTok'} with this title, description, and visibility.
+                  Confirm direct upload to {destination === 'youtube-shorts' ? 'YouTube Shorts' : 'YouTube'} with this title, description, and visibility.
                 </span>
               </label>
             )}
@@ -1125,14 +822,25 @@ export function ExportModal({
                 value={`${settings.width}x${settings.height}`}
                 onChange={(e) => {
                   const [w, h] = e.target.value.split('x').map(Number);
-                  setSettings((s) => ({ ...s, width: w, height: h }));
+                  setSettings((s) => ({
+                    ...s,
+                    width: w,
+                    height: h,
+                    bitrateMbps:
+                      w >= 3840 && s.bitrateMbps < 24
+                        ? 24
+                        : w === 2560 && s.bitrateMbps < 16
+                        ? 16
+                        : s.bitrateMbps,
+                  }));
                 }}
                 className="w-full bg-[#111114] border border-[#2B2B34] rounded px-2.5 py-1.5 text-xs text-[#E4E4EC] outline-none"
               >
                 <option value="3840x2160">3840 × 2160 (4K UHD)</option>
+                <option value="2560x1440">2560 × 1440 (1440p QHD)</option>
                 <option value="1920x1080">1920 × 1080 (YouTube 1080p HD)</option>
                 <option value="1280x720">1280 × 720 (720p HD)</option>
-                <option value="1080x1920">1080 × 1920 (Shorts / TikTok 9:16)</option>
+                <option value="1080x1920">1080 × 1920 (YouTube Shorts 9:16)</option>
                 <option value="1080x1080">1080 × 1080 (Square 1:1)</option>
               </select>
             </div>
@@ -1169,6 +877,7 @@ export function ExportModal({
                   <option value={4}>4 Mbps</option>
                   <option value={8}>8 Mbps</option>
                   <option value={12}>12 Mbps</option>
+                  <option value={16}>16 Mbps</option>
                   <option value={24}>24 Mbps</option>
                   <option value={36}>36 Mbps</option>
                   <option value={50}>50 Mbps</option>
@@ -1225,7 +934,7 @@ export function ExportModal({
               <div className="flex items-center justify-between text-xs">
                 <span className="flex items-center gap-1.5 text-[#D4D4DC]">
                   <UploadCloud className="w-3.5 h-3.5 text-[#60A5FA]" />
-                  Step 2: Uploading to {destination === 'youtube-shorts' ? 'YouTube Shorts' : destination === 'youtube' ? 'YouTube' : 'TikTok'}...
+                  Step 2: Uploading to {destination === 'youtube-shorts' ? 'YouTube Shorts' : 'YouTube'}...
                 </span>
                 <span className="font-mono-tabular text-[#60A5FA]">{Math.round(uploadProgress)}%</span>
               </div>
@@ -1247,22 +956,6 @@ export function ExportModal({
                   </span>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  {publishedResult?.platform === 'TikTok' && publishedResult.id && (
-                    <button
-                      type="button"
-                      disabled={checkingPublishStatus}
-                      onClick={async () => {
-                        setCheckingPublishStatus(true);
-                        const res = await fetchTikTokPublishStatus(publishedResult.id!);
-                        setTiktokLivePublishStatus(res);
-                        setCheckingPublishStatus(false);
-                      }}
-                      className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-[#1E293B] hover:bg-[#334155] text-xs font-medium text-white cursor-pointer disabled:opacity-50"
-                    >
-                      <BarChart3 className="w-3 h-3" />
-                      <span>{checkingPublishStatus ? 'Checking...' : 'Check Status'}</span>
-                    </button>
-                  )}
                   {publishedResult?.url && (
                     <a
                       href={publishedResult.url}
@@ -1284,17 +977,6 @@ export function ExportModal({
                   </a>
                 </div>
               </div>
-              {tiktokLivePublishStatus && (
-                <div className="text-[11px] font-mono-tabular text-[#D1FAE5] border-t border-[#10B981]/25 pt-2">
-                  TikTok Status: {tiktokLivePublishStatus.status}
-                  {tiktokLivePublishStatus.uploadedBytes !== undefined
-                    ? ` · ${tiktokLivePublishStatus.uploadedBytes.toLocaleString()} bytes`
-                    : ''}
-                  {tiktokLivePublishStatus.failReason
-                    ? ` · ${tiktokLivePublishStatus.failReason}`
-                    : ''}
-                </div>
-              )}
             </div>
           )}
 
@@ -1369,7 +1051,7 @@ export function ExportModal({
             </button>
             <div className="hidden sm:flex items-center gap-2 text-[11px] text-[#7D7D8A]">
               <a
-                href="/terms"
+                href="#/terms"
                 onClick={(e) => {
                   if (onNavigate) {
                     e.preventDefault();
@@ -1383,7 +1065,7 @@ export function ExportModal({
               </a>
               <span>·</span>
               <a
-                href="/privacy"
+                href="#/privacy"
                 onClick={(e) => {
                   if (onNavigate) {
                     e.preventDefault();

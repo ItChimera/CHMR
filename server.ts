@@ -1,7 +1,6 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-import crypto from 'crypto';
 import express from 'express';
 import fs from 'fs';
 import http from 'http';
@@ -14,194 +13,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT || 3000);
-
-interface TikTokSession {
-  accessToken: string;
-  refreshToken?: string;
-  openId: string;
-  displayName?: string;
-  avatarUrl?: string;
-  scope?: string;
-  expiresAt: number;
-  refreshExpiresAt?: number;
-}
-
-const tiktokSessions = new Map<string, TikTokSession>();
-const tiktokPendingStates = new Map<string, { redirectUri: string; expiresAt: number }>();
-
-function getTikTokCookieSecretKey(): Buffer {
-  const seed =
-    process.env.TIKTOK_SESSION_SECRET ||
-    process.env.TIKTOK_CLIENT_SECRET ||
-    process.env.GEMINI_API_KEY ||
-    'chmr-tiktok-session-fallback-key';
-  return crypto.createHash('sha256').update(seed).digest();
-}
-
-function sealTikTokSession(session: TikTokSession): string {
-  const compact: TikTokSession = {
-    accessToken: session.accessToken,
-    refreshToken: session.refreshToken,
-    openId: session.openId,
-    displayName: session.displayName,
-    avatarUrl: session.avatarUrl && session.avatarUrl.length <= 500 ? session.avatarUrl : undefined,
-    scope: session.scope,
-    expiresAt: session.expiresAt,
-    refreshExpiresAt: session.refreshExpiresAt,
-  };
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', getTikTokCookieSecretKey(), iv);
-  const encrypted = Buffer.concat([cipher.update(JSON.stringify(compact), 'utf8'), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return Buffer.concat([iv, tag, encrypted]).toString('base64url');
-}
-
-function unsealTikTokSession(token?: string): TikTokSession | null {
-  if (!token) return null;
-  try {
-    const raw = Buffer.from(token, 'base64url');
-    if (raw.length <= 28) return null;
-    const iv = raw.subarray(0, 12);
-    const tag = raw.subarray(12, 28);
-    const ciphertext = raw.subarray(28);
-    const decipher = crypto.createDecipheriv('aes-256-gcm', getTikTokCookieSecretKey(), iv);
-    decipher.setAuthTag(tag);
-    const json = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
-    const parsed = JSON.parse(json) as TikTokSession;
-    return parsed?.accessToken ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function setTikTokSessionCookies(res: express.Response, sid: string, session: TikTokSession): void {
-  const oneYearMs = 365 * 24 * 60 * 60 * 1000;
-  res.cookie('chmr_tiktok_sid', sid, {
-    httpOnly: true,
-    secure: true,
-    sameSite: 'none',
-    maxAge: oneYearMs,
-    path: '/',
-  });
-  res.cookie('chmr_tiktok_session', sealTikTokSession(session), {
-    httpOnly: true,
-    secure: true,
-    sameSite: 'none',
-    maxAge: oneYearMs,
-    path: '/',
-  });
-}
-
-async function resolveValidTikTokSession(
-  req: express.Request,
-  res: express.Response
-): Promise<TikTokSession | null> {
-  const cookies = parseCookies(req.headers.cookie);
-  const sid = cookies.chmr_tiktok_sid;
-  const headerSealed =
-    typeof req.headers['x-chmr-tiktok-session'] === 'string'
-      ? req.headers['x-chmr-tiktok-session']
-      : undefined;
-  let session: TikTokSession | null =
-    (sid ? tiktokSessions.get(sid) || null : null) ||
-    unsealTikTokSession(cookies.chmr_tiktok_session) ||
-    unsealTikTokSession(headerSealed);
-
-  if (!session) return null;
-
-  const now = Date.now();
-  if (session.expiresAt > now + 60_000) {
-    if (sid && !tiktokSessions.has(sid)) {
-      tiktokSessions.set(sid, session);
-    }
-    return session;
-  }
-
-  // Attempt silent refresh using TikTok refresh_token
-  const clientKey = process.env.TIKTOK_CLIENT_KEY;
-  const clientSecret = process.env.TIKTOK_CLIENT_SECRET;
-  const canRefresh =
-    Boolean(clientKey && clientSecret && session.refreshToken) &&
-    (!session.refreshExpiresAt || session.refreshExpiresAt > now + 30_000);
-
-  if (!canRefresh || !clientKey || !clientSecret || !session.refreshToken) {
-    if (sid) tiktokSessions.delete(sid);
-    return null;
-  }
-
-  try {
-    const refreshRes = await fetch('https://open.tiktokapis.com/v2/oauth/token/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_key: clientKey,
-        client_secret: clientSecret,
-        grant_type: 'refresh_token',
-        refresh_token: session.refreshToken,
-      }),
-    });
-    const refreshed = (await refreshRes.json()) as {
-      access_token?: string;
-      refresh_token?: string;
-      open_id?: string;
-      expires_in?: number;
-      refresh_expires_in?: number;
-    };
-    if (!refreshRes.ok || !refreshed.access_token) {
-      if (sid) tiktokSessions.delete(sid);
-      return null;
-    }
-
-    const updated: TikTokSession = {
-      ...session,
-      accessToken: refreshed.access_token,
-      refreshToken: refreshed.refresh_token || session.refreshToken,
-      openId: refreshed.open_id || session.openId,
-      expiresAt: now + (refreshed.expires_in || 86400) * 1000,
-      refreshExpiresAt: refreshed.refresh_expires_in
-        ? now + refreshed.refresh_expires_in * 1000
-        : session.refreshExpiresAt,
-    };
-    const nextSid = sid || crypto.randomBytes(24).toString('hex');
-    tiktokSessions.set(nextSid, updated);
-    setTikTokSessionCookies(res, nextSid, updated);
-    res.setHeader('x-chmr-tiktok-session-refresh', sealTikTokSession(updated));
-    return updated;
-  } catch {
-    return null;
-  }
-}
-
-function resolveAllowedOrigin(raw?: string): string | null {
-  if (!raw || typeof raw !== 'string') return null;
-  try {
-    const parsed = new URL(raw);
-    if (
-      (parsed.protocol === 'https:' &&
-        (parsed.hostname.endsWith('.ai.studio') || parsed.hostname.endsWith('.run.app'))) ||
-      ((parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') &&
-        (parsed.protocol === 'http:' || parsed.protocol === 'https:'))
-    ) {
-      return parsed.origin;
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-function parseCookies(cookieHeader?: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (!cookieHeader) return out;
-  for (const part of cookieHeader.split(';')) {
-    const idx = part.indexOf('=');
-    if (idx === -1) continue;
-    const key = part.slice(0, idx).trim();
-    const val = part.slice(idx + 1).trim();
-    if (key) out[key] = decodeURIComponent(val);
-  }
-  return out;
-}
 
 function getAppBaseUrl(req: express.Request): string {
   const envUrl = process.env.APP_URL;
@@ -320,618 +131,7 @@ async function startServer() {
     res.json({ ok: true });
   });
 
-  // TikTok URL prefix verification signature files
-  app.get('/tiktokF8WZArRW2Mjj7JUNKQPR3nA0iSTulx08.txt', (_req, res) => {
-    res.type('text/plain').send('tiktok-developers-site-verification=F8WZArRW2Mjj7JUNKQPR3nA0iSTulx08');
-  });
-  app.get('/tiktokfzqATA23iKI00iknAN3wR6gVSd5qfrj7.txt', (_req, res) => {
-    res.type('text/plain').send('tiktok-developers-site-verification=fzqATA23iKI00iknAN3wR6gVSd5qfrj7');
-  });
-  app.get('/tiktokGkUCjOc2adYNBfGHXCpFo5cu7CBLqan9.txt', (_req, res) => {
-    res.type('text/plain').send('tiktok-developers-site-verification=GkUCjOc2adYNBfGHXCpFo5cu7CBLqan9');
-  });
-  app.get('/tiktokiXr9e52lHNC6pVUEchSWqndhDLcU0Pka.txt', (_req, res) => {
-    res.type('text/plain').send('tiktok-developers-site-verification=iXr9e52lHNC6pVUEchSWqndhDLcU0Pka');
-  });
 
-  // TikTok 3P OAuth Status & Authorization URL
-  app.get('/api/auth/tiktok/status', async (req, res) => {
-    const configured = Boolean(process.env.TIKTOK_CLIENT_KEY && process.env.TIKTOK_CLIENT_SECRET);
-    const valid = await resolveValidTikTokSession(req, res);
-    const requestedOrigin =
-      resolveAllowedOrigin(typeof req.query.origin === 'string' ? req.query.origin : undefined) ||
-      resolveAllowedOrigin(typeof req.headers.origin === 'string' ? req.headers.origin : undefined);
-
-    res.json({
-      configured,
-      connected: Boolean(valid),
-      callbackUrl: `${requestedOrigin || getAppBaseUrl(req)}/auth/tiktok/callback`,
-      user: valid
-        ? { displayName: valid.displayName || 'TikTok Creator', avatarUrl: valid.avatarUrl }
-        : null,
-    });
-  });
-
-  app.get('/api/auth/tiktok/url', (req, res) => {
-    const clientKey = process.env.TIKTOK_CLIENT_KEY;
-    const clientSecret = process.env.TIKTOK_CLIENT_SECRET;
-    const requestedOrigin =
-      resolveAllowedOrigin(typeof req.query.origin === 'string' ? req.query.origin : undefined) ||
-      resolveAllowedOrigin(typeof req.headers.origin === 'string' ? req.headers.origin : undefined);
-    const baseUrl = requestedOrigin || getAppBaseUrl(req);
-    const redirectUri = `${baseUrl}/auth/tiktok/callback`;
-
-    if (!clientKey || !clientSecret) {
-      return res.status(400).json({
-        error: 'TIKTOK_CLIENT_KEY and TIKTOK_CLIENT_SECRET are not configured in Settings > Secrets.',
-        callbackUrl: redirectUri,
-      });
-    }
-
-    const now = Date.now();
-    for (const [k, v] of tiktokPendingStates) {
-      if (v.expiresAt <= now) tiktokPendingStates.delete(k);
-    }
-
-    const state = crypto.randomBytes(16).toString('hex');
-    tiktokPendingStates.set(state, { redirectUri, expiresAt: now + 10 * 60 * 1000 });
-    res.cookie('chmr_tiktok_state', state, {
-      httpOnly: true,
-      secure: true,
-      sameSite: 'none',
-      maxAge: 10 * 60 * 1000,
-      path: '/',
-    });
-    res.cookie('chmr_tiktok_redirect', redirectUri, {
-      httpOnly: true,
-      secure: true,
-      sameSite: 'none',
-      maxAge: 10 * 60 * 1000,
-      path: '/',
-    });
-
-    const scopeMode = typeof req.query.scopeMode === 'string' ? req.query.scopeMode : '';
-    const includeStats = req.query.includeStats === '1' || req.query.includeStats === 'true';
-    const scope =
-      scopeMode === 'stats-only'
-        ? 'user.info.basic,user.info.stats,video.upload,video.publish'
-        : scopeMode === 'video-list-only'
-        ? 'user.info.basic,video.list,video.upload,video.publish'
-        : includeStats
-        ? 'user.info.basic,user.info.stats,video.list,video.upload,video.publish'
-        : 'user.info.basic,video.upload,video.publish';
-
-    const params = new URLSearchParams({
-      client_key: clientKey,
-      scope,
-      response_type: 'code',
-      redirect_uri: redirectUri,
-      state,
-    });
-
-    res.json({ url: `https://www.tiktok.com/v2/auth/authorize/?${params.toString()}` });
-  });
-
-  const completeTikTokOAuthCodeExchange = async ({
-    req,
-    res,
-    code,
-    state,
-    clientOrigin,
-  }: {
-    req: express.Request;
-    res: express.Response;
-    code: string;
-    state: string;
-    clientOrigin?: string;
-  }): Promise<{ session: TikTokSession; sessionToken: string }> => {
-    const cookies = parseCookies(req.headers.cookie);
-    const pending = state ? tiktokPendingStates.get(state) : undefined;
-    if (!pending && cookies.chmr_tiktok_state && state && cookies.chmr_tiktok_state !== state) {
-      throw new Error('Invalid OAuth state.');
-    }
-    if (state) tiktokPendingStates.delete(state);
-
-    const clientKey = process.env.TIKTOK_CLIENT_KEY || '';
-    const clientSecret = process.env.TIKTOK_CLIENT_SECRET || '';
-    const allowedClientOrigin = resolveAllowedOrigin(clientOrigin);
-    const cookieRedirect =
-      cookies.chmr_tiktok_redirect && resolveAllowedOrigin(cookies.chmr_tiktok_redirect)
-        ? cookies.chmr_tiktok_redirect
-        : null;
-    const redirectUri =
-      (pending && pending.expiresAt > Date.now() ? pending.redirectUri : null) ||
-      (allowedClientOrigin ? `${allowedClientOrigin}/auth/tiktok/callback` : null) ||
-      cookieRedirect ||
-      `${getAppBaseUrl(req)}/auth/tiktok/callback`;
-
-    const tokenRes = await fetch('https://open.tiktokapis.com/v2/oauth/token/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_key: clientKey,
-        client_secret: clientSecret,
-        code,
-        grant_type: 'authorization_code',
-        redirect_uri: redirectUri,
-      }),
-    });
-
-    const tokenData = (await tokenRes.json()) as {
-      access_token?: string;
-      refresh_token?: string;
-      open_id?: string;
-      scope?: string;
-      expires_in?: number;
-      refresh_expires_in?: number;
-      error_description?: string;
-    };
-
-    if (!tokenRes.ok || !tokenData.access_token) {
-      throw new Error(`TikTok token exchange failed: ${tokenData.error_description || 'Unknown error'}`);
-    }
-
-    let displayName = 'TikTok Creator';
-    let avatarUrl: string | undefined;
-    try {
-      const userRes = await fetch(
-        'https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name,avatar_url',
-        {
-          headers: { Authorization: `Bearer ${tokenData.access_token}` },
-        }
-      );
-      if (userRes.ok) {
-        const userJson = (await userRes.json()) as {
-          data?: { user?: { display_name?: string; avatar_url?: string } };
-        };
-        displayName = userJson.data?.user?.display_name || displayName;
-        avatarUrl = userJson.data?.user?.avatar_url;
-      }
-    } catch {
-      // optional profile lookup
-    }
-
-    const now = Date.now();
-    const sid = crypto.randomBytes(24).toString('hex');
-    const session: TikTokSession = {
-      accessToken: tokenData.access_token,
-      refreshToken: tokenData.refresh_token,
-      openId: tokenData.open_id || '',
-      displayName,
-      avatarUrl,
-      scope: tokenData.scope,
-      expiresAt: now + (tokenData.expires_in || 86400) * 1000,
-      refreshExpiresAt: tokenData.refresh_expires_in
-        ? now + tokenData.refresh_expires_in * 1000
-        : now + 365 * 24 * 60 * 60 * 1000,
-    };
-    tiktokSessions.set(sid, session);
-    setTikTokSessionCookies(res, sid, session);
-    res.clearCookie('chmr_tiktok_state', { httpOnly: true, secure: true, sameSite: 'none', path: '/' });
-    res.clearCookie('chmr_tiktok_redirect', { httpOnly: true, secure: true, sameSite: 'none', path: '/' });
-
-    return {
-      session,
-      sessionToken: sealTikTokSession(session),
-    };
-  };
-
-  const renderTikTokCallbackErrorHtml = (errMsg: string) => `
-    <html>
-      <body style="background:#121214;color:#FCA5A5;font-family:sans-serif;padding:24px;">
-        <script>
-          (function () {
-            var msg = { type: 'OAUTH_AUTH_ERROR', provider: 'tiktok', error: ${JSON.stringify(errMsg)} };
-            try {
-              if (typeof BroadcastChannel !== 'undefined') {
-                var bc = new BroadcastChannel('chmr_oauth');
-                bc.postMessage(msg);
-                bc.close();
-              }
-            } catch (e) {}
-            if (window.opener) {
-              try { window.opener.postMessage(msg, '*'); } catch (e) {}
-              setTimeout(function () { window.close(); }, 350);
-            }
-          })();
-        </script>
-        <p>${errMsg.replace(/[<>&]/g, '')}</p>
-      </body>
-    </html>
-  `;
-
-  const handleTikTokCallback = async (req: express.Request, res: express.Response) => {
-    try {
-      const code = typeof req.query.code === 'string' ? req.query.code : '';
-      const state = typeof req.query.state === 'string' ? req.query.state : '';
-      const errParam = typeof req.query.error === 'string' ? req.query.error : '';
-      const errDesc = typeof req.query.error_description === 'string' ? req.query.error_description : '';
-      if (errParam || !code) {
-        const readableErr =
-          errParam === 'scope_not_authorized' || errDesc.toLowerCase().includes('scope')
-            ? `TikTok rejected stats scopes (${errDesc || errParam}). Enable Login Kit & Display API (user.info.stats, video.list) in TikTok Developer Portal -> Sandbox/App Products, then retry.`
-            : `TikTok authorization did not complete (${errDesc || errParam || 'missing authorization code'}).`;
-        return res.status(400).send(renderTikTokCallbackErrorHtml(readableErr));
-      }
-
-      const { sessionToken } = await completeTikTokOAuthCodeExchange({ req, res, code, state });
-
-      res.send(`
-        <html>
-          <body style="background:#121214;color:#F4F4F7;font-family:sans-serif;padding:24px;">
-            <script>
-              (function () {
-                var token = ${JSON.stringify(sessionToken)};
-                try {
-                  localStorage.setItem('chmr_tiktok_sealed_session', token);
-                } catch (e) {}
-                var msg = { type: 'OAUTH_AUTH_SUCCESS', provider: 'tiktok', sessionToken: token };
-                try {
-                  if (typeof BroadcastChannel !== 'undefined') {
-                    var bc = new BroadcastChannel('chmr_oauth');
-                    bc.postMessage(msg);
-                    bc.close();
-                  }
-                } catch (e) {}
-                if (window.opener) {
-                  try { window.opener.postMessage(msg, '*'); } catch (e) {}
-                  window.close();
-                } else {
-                  window.location.replace('/');
-                }
-              })();
-            </script>
-            <p>TikTok account saved in CHMR. This window will close automatically.</p>
-          </body>
-        </html>
-      `);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'TikTok callback error';
-      res.status(500).send(renderTikTokCallbackErrorHtml(msg));
-    }
-  };
-
-  app.get(['/auth/tiktok/callback', '/auth/tiktok/callback/'], handleTikTokCallback);
-
-  // Fallback JSON exchange endpoint if a previously cached Service Worker intercepts /auth/tiktok/callback
-  app.post('/api/auth/tiktok/exchange', async (req, res) => {
-    try {
-      const { code, state, origin } = (req.body || {}) as {
-        code?: string;
-        state?: string;
-        origin?: string;
-      };
-      if (!code || typeof code !== 'string') {
-        return res.status(400).json({ error: 'Authorization code is missing.' });
-      }
-      const { session, sessionToken } = await completeTikTokOAuthCodeExchange({
-        req,
-        res,
-        code,
-        state: typeof state === 'string' ? state : '',
-        clientOrigin: typeof origin === 'string' ? origin : undefined,
-      });
-      res.json({
-        ok: true,
-        sessionToken,
-        user: {
-          displayName: session.displayName || 'TikTok Creator',
-          avatarUrl: session.avatarUrl,
-        },
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'TikTok code exchange failed.';
-      res.status(400).json({ error: msg });
-    }
-  });
-
-  app.post('/api/auth/tiktok/logout', (req, res) => {
-    const cookies = parseCookies(req.headers.cookie);
-    if (cookies.chmr_tiktok_sid) {
-      tiktokSessions.delete(cookies.chmr_tiktok_sid);
-    }
-    res.clearCookie('chmr_tiktok_sid', { httpOnly: true, secure: true, sameSite: 'none', path: '/' });
-    res.clearCookie('chmr_tiktok_session', { httpOnly: true, secure: true, sameSite: 'none', path: '/' });
-    res.json({ ok: true });
-  });
-
-  app.get('/api/metrics/tiktok', async (req, res) => {
-    try {
-      const session = await resolveValidTikTokSession(req, res);
-      if (!session) {
-        return res.json({
-          connected: false,
-          hasStatsScope: false,
-          hasVideoListScope: false,
-          profile: null,
-          stats: null,
-          videos: [],
-        });
-      }
-
-      const granted = (session.scope || '').split(/[\s,]+/).filter(Boolean);
-      const hasStatsScope = granted.includes('user.info.stats');
-      const hasVideoListScope = granted.includes('video.list');
-
-      let stats: {
-        followerCount?: number;
-        followingCount?: number;
-        likesCount?: number;
-        videoCount?: number;
-      } | null = null;
-      let profile = {
-        displayName: session.displayName || 'TikTok Creator',
-        avatarUrl: session.avatarUrl,
-      };
-      const apiErrors: string[] = [];
-
-      if (hasStatsScope || granted.length === 0) {
-        try {
-          const statsRes = await fetch(
-            'https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name,avatar_url,follower_count,following_count,likes_count,video_count',
-            { headers: { Authorization: `Bearer ${session.accessToken}` } }
-          );
-          const statsJson = (await statsRes.json().catch(() => ({}))) as {
-            data?: {
-              user?: {
-                display_name?: string;
-                avatar_url?: string;
-                follower_count?: number;
-                following_count?: number;
-                likes_count?: number;
-                video_count?: number;
-              };
-            };
-            error?: { code?: string; message?: string };
-          };
-          if (!statsRes.ok || (statsJson.error?.code && statsJson.error.code !== 'ok')) {
-            if (hasStatsScope) {
-              apiErrors.push(
-                `Creator stats (${statsJson.error?.code || statsRes.status}): ${statsJson.error?.message || statsRes.statusText}`
-              );
-            }
-          } else {
-            const u = statsJson.data?.user;
-            if (u) {
-              profile = {
-                displayName: u.display_name || profile.displayName,
-                avatarUrl: u.avatar_url || profile.avatarUrl,
-              };
-              if (
-                u.follower_count !== undefined ||
-                u.likes_count !== undefined ||
-                u.video_count !== undefined
-              ) {
-                stats = {
-                  followerCount: u.follower_count,
-                  followingCount: u.following_count,
-                  likesCount: u.likes_count,
-                  videoCount: u.video_count,
-                };
-              }
-            }
-          }
-        } catch (e) {
-          apiErrors.push(e instanceof Error ? e.message : 'Unable to reach TikTok user info endpoint.');
-        }
-      }
-
-      let videos: Array<{
-        id: string;
-        title: string;
-        createTime?: number;
-        coverImageUrl?: string;
-        shareUrl?: string;
-        duration?: number;
-        viewCount?: number;
-        likeCount?: number;
-        commentCount?: number;
-        shareCount?: number;
-      }> = [];
-
-      if (hasVideoListScope) {
-        try {
-          const listRes = await fetch(
-            'https://open.tiktokapis.com/v2/video/list/?fields=id,title,create_time,cover_image_url,share_url,duration,like_count,comment_count,share_count,view_count',
-            {
-              method: 'POST',
-              headers: {
-                Authorization: `Bearer ${session.accessToken}`,
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({ max_count: 20 }),
-            }
-          );
-          const listJson = (await listRes.json().catch(() => ({}))) as {
-            data?: {
-              videos?: Array<{
-                id: string;
-                title?: string;
-                create_time?: number;
-                cover_image_url?: string;
-                share_url?: string;
-                duration?: number;
-                view_count?: number;
-                like_count?: number;
-                comment_count?: number;
-                share_count?: number;
-              }>;
-            };
-            error?: { code?: string; message?: string };
-          };
-          if (!listRes.ok || (listJson.error?.code && listJson.error.code !== 'ok')) {
-            apiErrors.push(
-              `Video list (${listJson.error?.code || listRes.status}): ${listJson.error?.message || listRes.statusText}`
-            );
-          } else {
-            videos = (listJson.data?.videos || []).map((v) => ({
-              id: v.id,
-              title: v.title || 'TikTok Video',
-              createTime: v.create_time,
-              coverImageUrl: v.cover_image_url,
-              shareUrl: v.share_url,
-              duration: v.duration,
-              viewCount: v.view_count,
-              likeCount: v.like_count,
-              commentCount: v.comment_count,
-              shareCount: v.share_count,
-            }));
-          }
-        } catch (e) {
-          apiErrors.push(e instanceof Error ? e.message : 'Unable to reach TikTok video list endpoint.');
-        }
-      }
-
-      const apiError = apiErrors.length > 0 ? apiErrors.join(' · ') : undefined;
-      let note: string | undefined;
-      if (!hasStatsScope && !stats) {
-        note =
-          'Your current TikTok sign-in only includes upload permissions. Add Display API scopes (user.info.stats, video.list) to your TikTok app / Sandbox and click Sync Creator Stats.';
-      } else if (hasStatsScope && !hasVideoListScope) {
-        note =
-          'Follower stats are active, while video.list scope was not granted — enable video.list in TikTok Developer Portal to graph individual videos.';
-      }
-
-      res.json({
-        connected: true,
-        hasStatsScope: Boolean(stats) || hasStatsScope,
-        hasVideoListScope,
-        grantedScopes: granted,
-        profile,
-        stats,
-        videos,
-        apiError,
-        note,
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Unable to load TikTok metrics.';
-      res.status(500).json({ error: msg });
-    }
-  });
-
-  app.post('/api/publish/tiktok/status', async (req, res) => {
-    try {
-      const session = await resolveValidTikTokSession(req, res);
-      if (!session) {
-        return res.status(401).json({ error: 'Please connect your TikTok account first.' });
-      }
-      const { publishId } = (req.body || {}) as { publishId?: string };
-      if (!publishId) {
-        return res.status(400).json({ error: 'publishId is required.' });
-      }
-      const statusRes = await fetch('https://open.tiktokapis.com/v2/post/publish/status/fetch/', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${session.accessToken}`,
-          'Content-Type': 'application/json; charset=UTF-8',
-        },
-        body: JSON.stringify({ publish_id: publishId }),
-      });
-      const statusJson = (await statusRes.json()) as {
-        data?: {
-          status?: string;
-          fail_reason?: string;
-          uploaded_bytes?: number;
-          publicaly_available_post_id?: string[];
-        };
-        error?: { message?: string };
-      };
-      if (!statusRes.ok) {
-        return res.status(400).json({ error: statusJson.error?.message || 'Unable to fetch publish status.' });
-      }
-      res.json({
-        publishId,
-        status: statusJson.data?.status || 'UNKNOWN',
-        failReason: statusJson.data?.fail_reason,
-        uploadedBytes: statusJson.data?.uploaded_bytes,
-        publicPostIds: statusJson.data?.publicaly_available_post_id,
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Status check failed.';
-      res.status(500).json({ error: msg });
-    }
-  });
-
-  app.post(
-    '/api/publish/tiktok',
-    express.raw({ type: ['video/*', 'application/octet-stream'], limit: '250mb' }),
-    async (req, res) => {
-      try {
-        const session = await resolveValidTikTokSession(req, res);
-        if (!session) {
-          return res.status(401).json({ error: 'Please connect your TikTok account first.' });
-        }
-
-        const videoBuffer = req.body as Buffer;
-        if (!Buffer.isBuffer(videoBuffer) || videoBuffer.length === 0) {
-          return res.status(400).json({ error: 'Rendered video payload is empty.' });
-        }
-
-        const captionHeader = decodeURIComponent(String(req.headers['x-tiktok-caption'] || 'Untitled CHMR Video'));
-        const privacyHeader = String(req.headers['x-tiktok-privacy'] || 'SELF_ONLY');
-        const mimeType = String(req.headers['x-tiktok-mime'] || 'video/webm');
-
-        const initRes = await fetch('https://open.tiktokapis.com/v2/post/publish/video/init/', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${session.accessToken}`,
-            'Content-Type': 'application/json; charset=UTF-8',
-          },
-          body: JSON.stringify({
-            post_info: {
-              title: captionHeader.slice(0, 2200),
-              privacy_level: privacyHeader,
-              disable_duet: false,
-              disable_comment: false,
-              disable_stitch: false,
-            },
-            source_info: {
-              source: 'FILE_UPLOAD',
-              video_size: videoBuffer.length,
-              chunk_size: videoBuffer.length,
-              total_chunk_count: 1,
-            },
-          }),
-        });
-
-        const initJson = (await initRes.json()) as {
-          data?: { publish_id?: string; upload_url?: string };
-          error?: { code?: string; message?: string };
-        };
-
-        if (!initRes.ok || !initJson.data?.upload_url) {
-          return res.status(400).json({
-            error: initJson.error?.message || `TikTok upload initialization failed (${initRes.status}).`,
-          });
-        }
-
-        const uploadRes = await fetch(initJson.data.upload_url, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': mimeType,
-            'Content-Length': String(videoBuffer.length),
-            'Content-Range': `bytes 0-${videoBuffer.length - 1}/${videoBuffer.length}`,
-          },
-          body: new Uint8Array(videoBuffer),
-        });
-
-        if (!uploadRes.ok) {
-          const uploadErr = await uploadRes.text().catch(() => '');
-          return res.status(502).json({
-            error: `TikTok media upload failed (${uploadRes.status}): ${uploadErr || uploadRes.statusText}`,
-          });
-        }
-
-        res.json({
-          publishId: initJson.data.publish_id || '',
-          status: 'PUBLISHED_TO_TIKTOK_INBOX',
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'TikTok publishing failed.';
-        res.status(500).json({ error: message });
-      }
-    }
-  );
 
   function buildDesktopRuntimeAssets(defaultUpdateOrigin: string) {
     const buildTime = new Date().toISOString();
@@ -999,8 +199,6 @@ function loadDotEnv(envPath) {
 
 function applySavedEnvOverrides() {
   const cfg = readLocalConfig();
-  if (cfg.tiktokClientKey) process.env.TIKTOK_CLIENT_KEY = cfg.tiktokClientKey;
-  if (cfg.tiktokClientSecret) process.env.TIKTOK_CLIENT_SECRET = cfg.tiktokClientSecret;
   if (cfg.googleClientId) process.env.GOOGLE_CLIENT_ID = cfg.googleClientId;
   if (cfg.googleClientSecret) process.env.GOOGLE_CLIENT_SECRET = cfg.googleClientSecret;
   if (cfg.geminiApiKey) process.env.GEMINI_API_KEY = cfg.geminiApiKey;
@@ -1029,68 +227,8 @@ const MIME_TYPES = {
   '.wav': 'audio/wav',
 };
 
-const tiktokSessions = new Map();
-const tiktokPendingStates = new Map();
 const youtubePendingStates = new Map();
-
-function getSecretKey() {
-  const seed =
-    process.env.TIKTOK_SESSION_SECRET ||
-    process.env.TIKTOK_CLIENT_SECRET ||
-    process.env.GOOGLE_CLIENT_SECRET ||
-    'chmr-local-desktop-session-key';
-  return crypto.createHash('sha256').update(seed).digest();
-}
-
-function sealObj(obj) {
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', getSecretKey(), iv);
-  const encrypted = Buffer.concat([cipher.update(JSON.stringify(obj), 'utf8'), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return Buffer.concat([iv, tag, encrypted]).toString('base64url');
-}
-
-function unsealObj(token) {
-  if (!token) return null;
-  try {
-    const raw = Buffer.from(token, 'base64url');
-    if (raw.length <= 28) return null;
-    const decipher = crypto.createDecipheriv('aes-256-gcm', getSecretKey(), raw.subarray(0, 12));
-    decipher.setAuthTag(raw.subarray(12, 28));
-    const json = Buffer.concat([decipher.update(raw.subarray(28)), decipher.final()]).toString('utf8');
-    return JSON.parse(json);
-  } catch {
-    return null;
-  }
-}
-
-function sealSession(session) {
-  return sealObj(session);
-}
-
-function unsealSession(token) {
-  const parsed = unsealObj(token);
-  return parsed && parsed.accessToken ? parsed : null;
-}
-
-function parseCookies(cookieHeader) {
-  const out = {};
-  if (!cookieHeader) return out;
-  for (const part of cookieHeader.split(';')) {
-    const idx = part.indexOf('=');
-    if (idx === -1) continue;
-    const k = part.slice(0, idx).trim();
-    const v = part.slice(idx + 1).trim();
-    if (k) {
-      try {
-        out[k] = decodeURIComponent(v);
-      } catch {
-        out[k] = v;
-      }
-    }
-  }
-  return out;
-}
+let activeYouTubeSession = null;
 
 function readBody(req, maxBytes = 300 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
@@ -1120,89 +258,10 @@ function sendJson(res, status, data, extraHeaders = {}) {
   res.end(body);
 }
 
-function buildCookieHeaders(sid, session) {
-  const maxAge = 365 * 24 * 60 * 60;
-  return [
-    \`chmr_tiktok_sid=\${encodeURIComponent(sid)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=\${maxAge}\`,
-    \`chmr_tiktok_session=\${encodeURIComponent(sealSession(session))}; HttpOnly; SameSite=Lax; Path=/; Max-Age=\${maxAge}\`,
-  ];
-}
 
-function persistTikTokSessionOnDisk(session) {
-  try {
-    writeLocalConfig({ savedTikTokSession: sealObj(session) });
-  } catch {}
-}
-
-function getPersistedTikTokSession() {
-  const cfg = readLocalConfig();
-  return cfg.savedTikTokSession ? unsealSession(cfg.savedTikTokSession) : null;
-}
-
-function persistYouTubeSessionOnDisk(session) {
-  try {
-    writeLocalConfig({ savedYouTubeSession: session ? sealObj(session) : null });
-  } catch {}
-}
-
-function getPersistedYouTubeSession() {
-  const cfg = readLocalConfig();
-  const parsed = cfg.savedYouTubeSession ? unsealObj(cfg.savedYouTubeSession) : null;
-  return parsed && (parsed.accessToken || parsed.refreshToken) ? parsed : null;
-}
-
-async function resolveValidTikTokSession(req, res) {
-  const cookies = parseCookies(req.headers.cookie);
-  const sid = cookies.chmr_tiktok_sid;
-  const headerSealed = typeof req.headers['x-chmr-tiktok-session'] === 'string'
-    ? req.headers['x-chmr-tiktok-session']
-    : undefined;
-  const session =
-    (sid && tiktokSessions.get(sid)) ||
-    unsealSession(cookies.chmr_tiktok_session) ||
-    unsealSession(headerSealed) ||
-    getPersistedTikTokSession();
-
-  if (!session) return null;
-  if (session.expiresAt > Date.now() + 60000) return session;
-
-  const clientKey = process.env.TIKTOK_CLIENT_KEY;
-  const clientSecret = process.env.TIKTOK_CLIENT_SECRET;
-  if (!clientKey || !clientSecret || !session.refreshToken) return null;
-
-  try {
-    const refreshRes = await fetch('https://open.tiktokapis.com/v2/oauth/token/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_key: clientKey,
-        client_secret: clientSecret,
-        grant_type: 'refresh_token',
-        refresh_token: session.refreshToken,
-      }),
-    });
-    const refreshed = await refreshRes.json();
-    if (!refreshRes.ok || !refreshed.access_token) return null;
-    const now = Date.now();
-    const updated = {
-      ...session,
-      accessToken: refreshed.access_token,
-      refreshToken: refreshed.refresh_token || session.refreshToken,
-      expiresAt: now + (refreshed.expires_in || 86400) * 1000,
-    };
-    const nextSid = sid || crypto.randomBytes(24).toString('hex');
-    tiktokSessions.set(nextSid, updated);
-    persistTikTokSessionOnDisk(updated);
-    res.setHeader('Set-Cookie', buildCookieHeaders(nextSid, updated));
-    res.setHeader('x-chmr-tiktok-session-refresh', sealSession(updated));
-    return updated;
-  } catch {
-    return null;
-  }
-}
 
 async function resolveValidYouTubeSession() {
-  const session = getPersistedYouTubeSession();
+  const session = activeYouTubeSession;
   if (!session) return null;
   if (session.accessToken && session.expiresAt > Date.now() + 60000) {
     return session;
@@ -1229,68 +288,14 @@ async function resolveValidYouTubeSession() {
       accessToken: refreshed.access_token,
       expiresAt: Date.now() + (refreshed.expires_in || 3600) * 1000,
     };
-    persistYouTubeSessionOnDisk(updated);
+    activeYouTubeSession = updated;
     return updated;
   } catch {
     return null;
   }
 }
 
-async function completeTikTokExchange(code, state, fallbackOrigin) {
-  const pending = state ? tiktokPendingStates.get(state) : undefined;
-  if (state) tiktokPendingStates.delete(state);
-  const redirectUri = (pending && pending.redirectUri) || \`\${fallbackOrigin}/auth/tiktok/callback\`;
-  const clientKey = process.env.TIKTOK_CLIENT_KEY || '';
-  const clientSecret = process.env.TIKTOK_CLIENT_SECRET || '';
 
-  const tokenRes = await fetch('https://open.tiktokapis.com/v2/oauth/token/', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      client_key: clientKey,
-      client_secret: clientSecret,
-      code,
-      grant_type: 'authorization_code',
-      redirect_uri: redirectUri,
-    }),
-  });
-  const tokenData = await tokenRes.json();
-  if (!tokenRes.ok || !tokenData.access_token) {
-    throw new Error(\`TikTok token exchange failed: \${tokenData.error_description || 'Unknown error'}\`);
-  }
-
-  let displayName = 'TikTok Creator';
-  let avatarUrl;
-  try {
-    const userRes = await fetch(
-      'https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name,avatar_url',
-      { headers: { Authorization: \`Bearer \${tokenData.access_token}\` } }
-    );
-    if (userRes.ok) {
-      const userJson = await userRes.json();
-      displayName = userJson?.data?.user?.display_name || displayName;
-      avatarUrl = userJson?.data?.user?.avatar_url;
-    }
-  } catch {}
-
-  const now = Date.now();
-  const sid = crypto.randomBytes(24).toString('hex');
-  const session = {
-    accessToken: tokenData.access_token,
-    refreshToken: tokenData.refresh_token,
-    openId: tokenData.open_id || '',
-    displayName,
-    avatarUrl,
-    scope: tokenData.scope,
-    expiresAt: now + (tokenData.expires_in || 86400) * 1000,
-    refreshExpiresAt: tokenData.refresh_expires_in
-      ? now + tokenData.refresh_expires_in * 1000
-      : now + 365 * 24 * 60 * 60 * 1000,
-  };
-  tiktokSessions.set(sid, session);
-  persistTikTokSessionOnDisk(session);
-  return { sid, session, sessionToken: sealSession(session) };
-}
 
 function extractZipBufferToDir(zipBuffer, targetDir) {
   let eocdOffset = -1;
@@ -1369,12 +374,9 @@ function startLocalServer(port = Number(process.env.PORT || 3000), dataDirOverri
           dataDir: activeDataDir,
           hasLocalSource: fs.existsSync(path.join(__dirname, 'src', 'App.tsx')),
           updateOrigin: cfg.updateOrigin || DEFAULT_UPDATE_ORIGIN || '',
-          tiktokClientKey: process.env.TIKTOK_CLIENT_KEY || '',
-          tiktokConfigured: Boolean(process.env.TIKTOK_CLIENT_KEY && process.env.TIKTOK_CLIENT_SECRET),
           googleClientId: process.env.GOOGLE_CLIENT_ID || '',
           googleConfigured: Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
           geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
-          tiktokCallbackUrl: \`\${localOrigin}/auth/tiktok/callback\`,
           youtubeCallbackUrl: \`\${localOrigin}/auth/youtube/callback\`,
         });
       }
@@ -1383,10 +385,6 @@ function startLocalServer(port = Number(process.env.PORT || 3000), dataDirOverri
         const raw = await readBody(req, 1024 * 1024);
         const body = JSON.parse(raw.toString('utf8') || '{}');
         const patch = {};
-        if (typeof body.tiktokClientKey === 'string') patch.tiktokClientKey = body.tiktokClientKey.trim();
-        if (typeof body.tiktokClientSecret === 'string' && body.tiktokClientSecret.trim()) {
-          patch.tiktokClientSecret = body.tiktokClientSecret.trim();
-        }
         if (typeof body.googleClientId === 'string') patch.googleClientId = body.googleClientId.trim();
         if (typeof body.googleClientSecret === 'string' && body.googleClientSecret.trim()) {
           patch.googleClientSecret = body.googleClientSecret.trim();
@@ -1516,293 +514,33 @@ function startLocalServer(port = Number(process.env.PORT || 3000), dataDirOverri
           }
         } catch {}
 
-        persistYouTubeSessionOnDisk({
+        activeYouTubeSession = {
           accessToken: tokenData.access_token,
           refreshToken: tokenData.refresh_token,
           expiresAt: Date.now() + (tokenData.expires_in || 3600) * 1000,
           name,
           email,
           avatarUrl,
-        });
+        };
 
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(\`<html><body style="background:#121214;color:#F4F4F7;font-family:sans-serif;padding:24px;"><script>
           (function () {
             var msg = { type: 'OAUTH_AUTH_SUCCESS', provider: 'youtube' };
             try { var bc = new BroadcastChannel('chmr_oauth'); bc.postMessage(msg); bc.close(); } catch (e) {}
-            if (window.opener) { try { window.opener.postMessage(msg, '*'); } catch (e) {} window.close(); }
+            if (window.opener) { try { window.opener.postMessage(msg, \${JSON.stringify(localOrigin)}); } catch (e) {} window.close(); }
             else { window.location.replace('/'); }
           })();
-        </script><p>YouTube account saved locally in CHMR. This window will close automatically.</p></body></html>\`);
+        </script><p>YouTube connected for this session. This window will close automatically.</p></body></html>\`);
         return;
       }
 
       if (req.method === 'POST' && pathname === '/api/auth/youtube/logout') {
-        persistYouTubeSessionOnDisk(null);
+        activeYouTubeSession = null;
         return sendJson(res, 200, { ok: true });
       }
 
-      if (req.method === 'GET' && pathname === '/api/auth/tiktok/status') {
-        const configured = Boolean(process.env.TIKTOK_CLIENT_KEY && process.env.TIKTOK_CLIENT_SECRET);
-        const valid = await resolveValidTikTokSession(req, res);
-        return sendJson(res, 200, {
-          configured,
-          connected: Boolean(valid),
-          callbackUrl: \`\${localOrigin}/auth/tiktok/callback\`,
-          user: valid ? { displayName: valid.displayName || 'TikTok Creator', avatarUrl: valid.avatarUrl } : null,
-        });
-      }
 
-      if (req.method === 'GET' && pathname === '/api/auth/tiktok/url') {
-        const clientKey = process.env.TIKTOK_CLIENT_KEY;
-        const clientSecret = process.env.TIKTOK_CLIENT_SECRET;
-        const redirectUri = \`\${localOrigin}/auth/tiktok/callback\`;
-        if (!clientKey || !clientSecret) {
-          return sendJson(res, 400, {
-            error: 'Add TIKTOK_CLIENT_KEY and TIKTOK_CLIENT_SECRET in Desktop & Updates -> Local Accounts Setup to link TikTok locally.',
-            callbackUrl: redirectUri,
-          });
-        }
-        const state = crypto.randomBytes(16).toString('hex');
-        tiktokPendingStates.set(state, { redirectUri, expiresAt: Date.now() + 10 * 60 * 1000 });
-        const scopeMode = urlObj.searchParams.get('scopeMode') || '';
-        const includeStats = urlObj.searchParams.get('includeStats') === '1' || urlObj.searchParams.get('includeStats') === 'true';
-        const scope =
-          scopeMode === 'stats-only'
-            ? 'user.info.basic,user.info.stats,video.upload,video.publish'
-            : scopeMode === 'video-list-only'
-            ? 'user.info.basic,video.list,video.upload,video.publish'
-            : includeStats
-            ? 'user.info.basic,user.info.stats,video.list,video.upload,video.publish'
-            : 'user.info.basic,video.upload,video.publish';
-        const params = new URLSearchParams({
-          client_key: clientKey,
-          scope,
-          response_type: 'code',
-          redirect_uri: redirectUri,
-          state,
-        });
-        return sendJson(res, 200, { url: \`https://www.tiktok.com/v2/auth/authorize/?\${params.toString()}\` });
-      }
-
-      if (req.method === 'GET' && (pathname === '/auth/tiktok/callback' || pathname === '/auth/tiktok/callback/')) {
-        const code = urlObj.searchParams.get('code') || '';
-        const state = urlObj.searchParams.get('state') || '';
-        const errParam = urlObj.searchParams.get('error') || '';
-        const errDesc = urlObj.searchParams.get('error_description') || '';
-        const sendLocalCallbackErr = (readableErr) => {
-          res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
-          res.end(\`<html><body style="background:#121214;color:#FCA5A5;font-family:sans-serif;padding:24px;"><script>
-            (function () {
-              var msg = { type: 'OAUTH_AUTH_ERROR', provider: 'tiktok', error: \${JSON.stringify(readableErr)} };
-              try { var bc = new BroadcastChannel('chmr_oauth'); bc.postMessage(msg); bc.close(); } catch (e) {}
-              if (window.opener) { try { window.opener.postMessage(msg, '*'); } catch (e) {} setTimeout(function () { window.close(); }, 350); }
-            })();
-          </script><p>\${readableErr.replace(/[<>&]/g, '')}</p></body></html>\`);
-        };
-        if (errParam || !code) {
-          const readableErr = errParam === 'scope_not_authorized' || errDesc.toLowerCase().includes('scope')
-            ? \`TikTok rejected stats scopes (\${errDesc || errParam}). Enable Display API (user.info.stats, video.list) in TikTok Developer Portal and retry.\`
-            : \`TikTok authorization did not complete (\${errDesc || errParam || 'missing code'}).\`;
-          sendLocalCallbackErr(readableErr);
-          return;
-        }
-        try {
-          const { sid, session, sessionToken } = await completeTikTokExchange(code, state, localOrigin);
-          res.writeHead(200, {
-            'Content-Type': 'text/html; charset=utf-8',
-            'Set-Cookie': buildCookieHeaders(sid, session),
-          });
-          res.end(\`<html><body style="background:#121214;color:#F4F4F7;font-family:sans-serif;padding:24px;"><script>
-            (function () {
-              var token = \${JSON.stringify(sessionToken)};
-              try { localStorage.setItem('chmr_tiktok_sealed_session', token); } catch (e) {}
-              var msg = { type: 'OAUTH_AUTH_SUCCESS', provider: 'tiktok', sessionToken: token };
-              try { var bc = new BroadcastChannel('chmr_oauth'); bc.postMessage(msg); bc.close(); } catch (e) {}
-              if (window.opener) { try { window.opener.postMessage(msg, '*'); } catch (e) {} window.close(); }
-              else { window.location.replace('/'); }
-            })();
-          </script><p>TikTok account saved locally in CHMR. This window will close automatically.</p></body></html>\`);
-        } catch (err) {
-          sendLocalCallbackErr(err instanceof Error ? err.message : 'TikTok callback error');
-        }
-        return;
-      }
-
-      if (req.method === 'POST' && pathname === '/api/auth/tiktok/exchange') {
-        const raw = await readBody(req, 1024 * 1024);
-        const body = JSON.parse(raw.toString('utf8') || '{}');
-        if (!body.code) return sendJson(res, 400, { error: 'Authorization code is missing.' });
-        const { sid, session, sessionToken } = await completeTikTokExchange(body.code, body.state || '', localOrigin);
-        return sendJson(
-          res,
-          200,
-          { ok: true, sessionToken, user: { displayName: session.displayName, avatarUrl: session.avatarUrl } },
-          { 'Set-Cookie': buildCookieHeaders(sid, session) }
-        );
-      }
-
-      if (req.method === 'POST' && pathname === '/api/auth/tiktok/logout') {
-        const cookies = parseCookies(req.headers.cookie);
-        if (cookies.chmr_tiktok_sid) tiktokSessions.delete(cookies.chmr_tiktok_sid);
-        writeLocalConfig({ savedTikTokSession: null });
-        return sendJson(res, 200, { ok: true }, {
-          'Set-Cookie': [
-            'chmr_tiktok_sid=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0',
-            'chmr_tiktok_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0',
-          ],
-        });
-      }
-
-      if (req.method === 'POST' && pathname === '/api/publish/tiktok') {
-        const session = await resolveValidTikTokSession(req, res);
-        if (!session) return sendJson(res, 401, { error: 'Please connect your TikTok account first.' });
-        const videoBuffer = await readBody(req, 250 * 1024 * 1024);
-        const captionHeader = decodeURIComponent(String(req.headers['x-tiktok-caption'] || 'Untitled CHMR Video'));
-        const privacyHeader = String(req.headers['x-tiktok-privacy'] || 'SELF_ONLY');
-        const mimeType = String(req.headers['x-tiktok-mime'] || 'video/webm');
-
-        const initRes = await fetch('https://open.tiktokapis.com/v2/post/publish/video/init/', {
-          method: 'POST',
-          headers: {
-            Authorization: \`Bearer \${session.accessToken}\`,
-            'Content-Type': 'application/json; charset=UTF-8',
-          },
-          body: JSON.stringify({
-            post_info: { title: captionHeader.slice(0, 2200), privacy_level: privacyHeader, disable_duet: false, disable_comment: false, disable_stitch: false },
-            source_info: { source: 'FILE_UPLOAD', video_size: videoBuffer.length, chunk_size: videoBuffer.length, total_chunk_count: 1 },
-          }),
-        });
-        const initJson = await initRes.json();
-        if (!initRes.ok || !initJson?.data?.upload_url) {
-          return sendJson(res, 400, { error: initJson?.error?.message || 'TikTok upload init failed.' });
-        }
-        const uploadRes = await fetch(initJson.data.upload_url, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': mimeType,
-            'Content-Length': String(videoBuffer.length),
-            'Content-Range': \`bytes 0-\${videoBuffer.length - 1}/\${videoBuffer.length}\`,
-          },
-          body: new Uint8Array(videoBuffer),
-        });
-        if (!uploadRes.ok) return sendJson(res, 502, { error: \`TikTok media upload failed (\${uploadRes.status}).\` });
-        return sendJson(res, 200, { publishId: initJson.data.publish_id || '', status: 'PUBLISHED_TO_TIKTOK_INBOX' });
-      }
-
-      if (req.method === 'GET' && pathname === '/api/metrics/tiktok') {
-        const session = await resolveValidTikTokSession(req, res);
-        if (!session) {
-          return sendJson(res, 200, {
-            connected: false,
-            hasStatsScope: false,
-            hasVideoListScope: false,
-            grantedScopes: [],
-            profile: null,
-            stats: null,
-            videos: [],
-          });
-        }
-        const granted = (session.scope || '').split(/[\\s,]+/).filter(Boolean);
-        const hasStatsScope = granted.includes('user.info.stats');
-        const hasVideoListScope = granted.includes('video.list');
-        let stats = null;
-        let profile = { displayName: session.displayName || 'TikTok Creator', avatarUrl: session.avatarUrl };
-        const apiErrors = [];
-        if (hasStatsScope || granted.length === 0) {
-          try {
-            const sr = await fetch(
-              'https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name,avatar_url,follower_count,following_count,likes_count,video_count',
-              { headers: { Authorization: \`Bearer \${session.accessToken}\` } }
-            );
-            const sj = await sr.json().catch(() => ({}));
-            if (!sr.ok || (sj && sj.error && sj.error.code && sj.error.code !== 'ok')) {
-              if (hasStatsScope) {
-                apiErrors.push(\`Creator stats (\${(sj && sj.error && sj.error.code) || sr.status}): \${(sj && sj.error && sj.error.message) || sr.statusText}\`);
-              }
-            } else {
-              const u = sj && sj.data && sj.data.user;
-              if (u) {
-                profile = { displayName: u.display_name || profile.displayName, avatarUrl: u.avatar_url || profile.avatarUrl };
-                if (u.follower_count !== undefined || u.likes_count !== undefined || u.video_count !== undefined) {
-                  stats = { followerCount: u.follower_count, followingCount: u.following_count, likesCount: u.likes_count, videoCount: u.video_count };
-                }
-              }
-            }
-          } catch (e) {
-            apiErrors.push(e && e.message ? e.message : 'Unable to reach TikTok stats API.');
-          }
-        }
-        let videos = [];
-        if (hasVideoListScope) {
-          try {
-            const lr = await fetch(
-              'https://open.tiktokapis.com/v2/video/list/?fields=id,title,create_time,cover_image_url,share_url,duration,like_count,comment_count,share_count,view_count',
-              {
-                method: 'POST',
-                headers: { Authorization: \`Bearer \${session.accessToken}\`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ max_count: 20 }),
-              }
-            );
-            const lj = await lr.json().catch(() => ({}));
-            if (!lr.ok || (lj && lj.error && lj.error.code && lj.error.code !== 'ok')) {
-              apiErrors.push(\`Video list (\${(lj && lj.error && lj.error.code) || lr.status}): \${(lj && lj.error && lj.error.message) || lr.statusText}\`);
-            } else {
-              videos = ((lj && lj.data && lj.data.videos) || []).map((v) => ({
-                id: v.id,
-                title: v.title || 'TikTok Video',
-                createTime: v.create_time,
-                coverImageUrl: v.cover_image_url,
-                shareUrl: v.share_url,
-                duration: v.duration,
-                viewCount: v.view_count,
-                likeCount: v.like_count,
-                commentCount: v.comment_count,
-                shareCount: v.share_count,
-              }));
-            }
-          } catch (e) {
-            apiErrors.push(e && e.message ? e.message : 'Unable to reach TikTok video list API.');
-          }
-        }
-        return sendJson(res, 200, {
-          connected: true,
-          hasStatsScope: Boolean(stats) || hasStatsScope,
-          hasVideoListScope,
-          grantedScopes: granted,
-          profile,
-          stats,
-          videos,
-          apiError: apiErrors.length > 0 ? apiErrors.join(' · ') : undefined,
-          note: !hasStatsScope && !stats
-            ? 'Your current TikTok sign-in only includes upload permissions. Add Display API scopes (user.info.stats, video.list) in TikTok Developer Portal and click Sync Creator Stats.'
-            : hasStatsScope && !hasVideoListScope
-            ? 'Follower stats are active, while video.list scope was not granted — enable video.list in TikTok Developer Portal to graph individual videos.'
-            : undefined,
-        });
-      }
-
-      if (req.method === 'POST' && pathname === '/api/publish/tiktok/status') {
-        const session = await resolveValidTikTokSession(req, res);
-        if (!session) return sendJson(res, 401, { error: 'Please connect your TikTok account first.' });
-        const raw = await readBody(req, 1024 * 1024);
-        const body = JSON.parse(raw.toString('utf8') || '{}');
-        if (!body.publishId) return sendJson(res, 400, { error: 'publishId is required.' });
-        const sr = await fetch('https://open.tiktokapis.com/v2/post/publish/status/fetch/', {
-          method: 'POST',
-          headers: { Authorization: \`Bearer \${session.accessToken}\`, 'Content-Type': 'application/json; charset=UTF-8' },
-          body: JSON.stringify({ publish_id: body.publishId }),
-        });
-        const sj = await sr.json();
-        if (!sr.ok) return sendJson(res, 400, { error: (sj && sj.error && sj.error.message) || 'Unable to fetch publish status.' });
-        return sendJson(res, 200, {
-          publishId: body.publishId,
-          status: (sj && sj.data && sj.data.status) || 'UNKNOWN',
-          failReason: sj && sj.data && sj.data.fail_reason,
-          uploadedBytes: sj && sj.data && sj.data.uploaded_bytes,
-          publicPostIds: sj && sj.data && sj.data.publicaly_available_post_id,
-        });
-      }
 
       if (pathname.startsWith('/api/ai/')) {
         return sendJson(res, 400, { error: 'Optional AI features require a GEMINI_API_KEY configured in Desktop & Updates.' });
@@ -1847,7 +585,7 @@ const { startLocalServer } = require('./local-server.cjs');
 
 let localServerRef = null;
 
-// Clean Chromium UA so Google/TikTok OAuth popups work inside native app windows
+// Clean Chromium UA so Google OAuth popups work inside native app windows
 app.userAgentFallback = app.userAgentFallback
   .replace(/Electron\\/\\S+\\s*/g, '')
   .replace(/chmr-windows-desktop\\/\\S+\\s*/g, '');
@@ -1927,7 +665,7 @@ async function createWindow() {
     win.show();
   });
 
-  // Keep OAuth popups inside native app windows so window.opener works directly
+  // Keep OAuth popups in an ephemeral (non-persistent) partition so individual logins are never saved
   win.webContents.setWindowOpenHandler(() => ({
     action: 'allow',
     overrideBrowserWindowOptions: {
@@ -1937,6 +675,7 @@ async function createWindow() {
       backgroundColor: '#121214',
       icon: path.join(__dirname, 'icon.png'),
       webPreferences: {
+        partition: 'chmr-oauth-ephemeral',
         contextIsolation: true,
         nodeIntegration: false,
       },
@@ -1946,7 +685,8 @@ async function createWindow() {
   win.loadURL(\`http://localhost:\${port}\`);
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await session.defaultSession.clearStorageData({ storages: ['cookies'] }).catch(() => {});
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
     callback(permission === 'media' || permission === 'microphone' || permission === 'clipboard-sanitized-write');
   });
@@ -1954,6 +694,10 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+app.on('before-quit', () => {
+  session.defaultSession.clearStorageData({ storages: ['cookies'] }).catch(() => {});
 });
 
 app.on('window-all-closed', () => {
@@ -2069,8 +813,6 @@ pause
 
     const localEnvExample = `# Optional local social & AI keys (can also be saved inside CHMR -> Desktop & Updates)
 PORT=3000
-TIKTOK_CLIENT_KEY=
-TIKTOK_CLIENT_SECRET=
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 GEMINI_API_KEY=
@@ -2147,10 +889,9 @@ Requirements: Node.js 18+ (https://nodejs.org)
 2. Check the "dist" folder for "CHMR Setup ${assets.version}.exe" and portable "CHMR ${assets.version}.exe".
 
 ACCOUNTS & PUBLISHING LOCALLY (NO GOOGLE CLOUD HOSTING NEEDED)
-- Open "Desktop & Updates -> Local Accounts Setup" inside CHMR to save your TikTok
-  keys and your own Google/YouTube Client ID & Secret directly on your PC.
-- Callback URLs on your desktop:
-  * TikTok:  http://localhost:3000/auth/tiktok/callback
+- Open "Desktop & Updates -> Local Accounts Setup" inside CHMR to save your own
+  Google/YouTube Client ID & Secret directly on your PC.
+- Callback URL on your desktop:
   * YouTube: http://localhost:3000/auth/youtube/callback
 
 UPDATING ANYTIME WITHOUT GOOGLE CLOUD PUBLISHING
@@ -2362,7 +1103,6 @@ pause
       isLocalServer: false,
       version: '1.1.0',
       origin: getAppBaseUrl(req),
-      tiktokCallbackUrl: 'http://localhost:3000/auth/tiktok/callback',
       youtubeCallbackUrl: 'http://localhost:3000/auth/youtube/callback',
     });
   });

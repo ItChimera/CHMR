@@ -9,7 +9,13 @@
     "start": "node server.ts",
     "build": "vite build",
     "preview": "vite preview",
-    "clean": "rm -rf dist dev-dist server.js",
+    "desktop:setup": "npm --prefix desktop install",
+    "desktop": "npm run build && npm --prefix desktop start",
+    "desktop:build": "npm run build && npm --prefix desktop run dist",
+    "desktop:build:win": "npm run build && npm --prefix desktop run dist:win",
+    "desktop:build:mac": "npm run build && npm --prefix desktop run dist:mac",
+    "desktop:build:linux": "npm run build && npm --prefix desktop run dist:linux",
+    "clean": "rm -rf dist dev-dist release desktop/web server.js",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

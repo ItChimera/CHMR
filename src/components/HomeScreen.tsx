@@ -16,7 +16,6 @@ interface HomeScreenProps {
   clipCount: number;
   totalDuration: number;
   assets: MediaAsset[];
-  savedTikTokUser: { displayName: string; avatarUrl?: string } | null;
   savedYouTubeUser: { name: string; avatarUrl?: string } | null;
   onOpenMetrics: (platform?: MetricsPlatformTab) => void;
   onOpenEditor: (workspace?: WorkspaceMode) => void;
@@ -36,7 +35,6 @@ export function HomeScreen({
   clipCount,
   totalDuration,
   assets,
-  savedTikTokUser,
   savedYouTubeUser,
   onOpenMetrics,
   onOpenEditor,
@@ -73,7 +71,7 @@ export function HomeScreen({
               Create, publish, and measure in one studio.
             </h1>
             <p className="text-[15px] text-[#9898A2] leading-relaxed">
-              Open your multi-track timeline to cut and upload, or inspect live performance graphs across YouTube and TikTok.
+              Open your multi-track timeline to cut and export up to 4K, or inspect live performance graphs for YouTube and Shorts.
             </p>
           </div>
 
@@ -159,7 +157,7 @@ export function HomeScreen({
                   <span>Edit &amp; Upload</span>
                 </h2>
                 <p className="text-xs text-[#9898A2] leading-relaxed">
-                  Cut on the multi-track timeline, grade in Rec.709, generate captions, and publish directly to YouTube, Shorts, or TikTok.
+                  Cut on the multi-track timeline, grade in Rec.709, generate captions, and export locally or publish directly to YouTube &amp; Shorts.
                 </p>
               </div>
 
@@ -209,7 +207,7 @@ export function HomeScreen({
                     <BarChart3 className="w-4 h-4 text-[#0A84FF]" />
                     <span className="text-xs font-medium text-[#E5E5EA]">Performance Analytics</span>
                   </div>
-                  <span className="text-[11px] text-[#8E8E98]">YouTube · Shorts · TikTok</span>
+                  <span className="text-[11px] text-[#8E8E98]">YouTube · Shorts</span>
                 </div>
 
                 {/* Clean Vector Sparkline Silhouette */}
@@ -271,22 +269,6 @@ export function HomeScreen({
                     <div className="text-[13px] font-medium text-white">YouTube Shorts</div>
                     <div className="text-[11px] text-[#8E8E98] truncate">
                       Vertical clip views &amp; format ratio
-                    </div>
-                  </div>
-                  <ChevronRight className="w-4 h-4 text-[#6E6E78] shrink-0" />
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => onOpenMetrics('tiktok')}
-                  className="w-full px-4 py-3 flex items-center justify-between gap-3 hover:bg-white/[0.04] transition-colors text-left cursor-pointer"
-                >
-                  <div className="min-w-0">
-                    <div className="text-[13px] font-medium text-white">TikTok</div>
-                    <div className="text-[11px] text-[#8E8E98] truncate">
-                      {savedTikTokUser
-                        ? `${savedTikTokUser.displayName} · Engagement & publish status`
-                        : 'Connect account for video & post graphs'}
                     </div>
                   </div>
                   <ChevronRight className="w-4 h-4 text-[#6E6E78] shrink-0" />

@@ -178,7 +178,7 @@ export function LegalPages({ doc, onNavigate }: LegalPagesProps) {
               <section className="space-y-2">
                 <h2 className="text-base font-semibold text-[#F4F4F7]">2. Description of the CHMR Service</h2>
                 <p>
-                  CHMR provides browser-based non-linear video editing, multi-track compositing, color grading, audio mixing, real-time timeline export (WebM, WAV, PNG, SRT, EDL, XML), optional AI editing tools (editing assistant, speech-to-text transcription, caption translation, voiceover narration, and semantic media search), and optional direct publishing integrations to YouTube and TikTok.
+                  CHMR provides browser-based non-linear video editing, multi-track compositing, color grading, audio mixing, real-time timeline export (MP4, WebM, WAV, PNG, SRT, EDL, XML), optional AI editing tools (editing assistant, speech-to-text transcription, caption translation, voiceover narration, and semantic media search), and optional direct publishing integration to YouTube.
                 </p>
               </section>
 
@@ -197,9 +197,6 @@ export function LegalPages({ doc, onNavigate }: LegalPagesProps) {
                 <ul className="list-disc pl-5 space-y-1 text-[#B4B4C2]">
                   <li>
                     <strong className="text-[#E4E4EC]">YouTube &amp; Google OAuth:</strong> Direct YouTube uploads use Google OAuth 2.0 and the YouTube Data API. By connecting your Google account, you agree to be bound by the YouTube Terms of Service and Google Privacy Policy.
-                  </li>
-                  <li>
-                    <strong className="text-[#E4E4EC]">TikTok Integration:</strong> Direct TikTok uploads use the TikTok Content Posting API via OAuth 2.0 and remain subject to TikTok&apos;s Terms of Service and Community Guidelines.
                   </li>
                 </ul>
               </section>
@@ -253,32 +250,29 @@ export function LegalPages({ doc, onNavigate }: LegalPagesProps) {
                     <strong className="text-[#E4E4EC]">AI Editing &amp; Transcription Tools:</strong> When you explicitly invoke the AI Editing Assistant, Speech-to-Text Transcription, Caption Translation, Voiceover TTS, or Media Intelligence Search, only the relevant prompt text, asset metadata, caption text, or selected audio sample is transmitted to our server-side Gemini API proxy to fulfill your request.
                   </li>
                   <li>
-                    <strong className="text-[#E4E4EC]">YouTube Direct Publishing:</strong> Signing in with Google uses client-side Firebase Authentication / Google OAuth 2.0 (`youtube.upload` scope) solely to upload the video you choose to render, along with the title, description, hashtags, and privacy setting you enter.
-                  </li>
-                  <li>
-                    <strong className="text-[#E4E4EC]">TikTok Direct Publishing:</strong> Connecting TikTok uses OAuth 2.0 (`user.info.basic`, `video.upload`, `video.publish`). Access tokens are stored in temporary server-side memory keyed to an HTTP-only session cookie (`chmr_tiktok_sid`) solely to display your connected display name and upload the rendered video you initiate.
+                    <strong className="text-[#E4E4EC]">YouTube Direct Publishing:</strong> Signing in with Google uses Google OAuth 2.0 (`youtube.upload` scope) solely for your active session to upload the video you choose to render, along with the title, description, hashtags, and privacy setting you enter. Individual logins are kept in memory only and are never saved to disk.
                   </li>
                 </ul>
               </section>
 
               <section className="space-y-2">
-                <h2 className="text-base font-semibold text-[#F4F4F7]">3. Cookies, Offline Storage &amp; PWA Caching</h2>
+                <h2 className="text-base font-semibold text-[#F4F4F7]">3. Offline Storage &amp; PWA Caching</h2>
                 <p>
-                  CHMR uses Service Worker caching (Workbox) so the editor interface and static application assets remain functional offline. Strictly necessary session cookies are used only when you initiate a TikTok OAuth flow (`chmr_tiktok_state` and `chmr_tiktok_sid`). We do not use third-party advertising trackers or sell personal information.
+                  CHMR uses Service Worker caching (Workbox) so the editor interface and static application assets remain functional offline. We do not persist individual user logins to disk, use third-party advertising trackers, or sell personal information.
                 </p>
               </section>
 
               <section className="space-y-2">
                 <h2 className="text-base font-semibold text-[#F4F4F7]">4. Data Sharing &amp; Retention</h2>
                 <p>
-                  CHMR does not sell, rent, or trade your personal data or media. Transient API payloads (AI requests or direct social video uploads) are forwarded only to the specific service provider you selected (Google Gemini, YouTube, or TikTok) and are not permanently archived by CHMR.
+                  CHMR does not sell, rent, or trade your personal data or media. Transient API payloads (optional AI requests or direct YouTube video uploads) are forwarded only to the specific service provider you selected (Google Gemini or YouTube) and are not permanently archived by CHMR.
                 </p>
               </section>
 
               <section className="space-y-2">
                 <h2 className="text-base font-semibold text-[#F4F4F7]">5. Managing &amp; Revoking Access</h2>
                 <p>
-                  You can sign out of YouTube or disconnect TikTok at any time directly inside the CHMR Export &amp; Publish dialog. You may also revoke CHMR&apos;s access at any time from your Google Account Security Settings or TikTok App Permissions settings.
+                  You can sign out of YouTube at any time directly inside the CHMR Export &amp; Publish dialog or Metrics view. You may also revoke CHMR&apos;s access at any time from your Google Account Security Settings.
                 </p>
               </section>
 

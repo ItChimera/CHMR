@@ -29,12 +29,9 @@ interface LocalConfigResponse {
   dataDir?: string;
   hasLocalSource?: boolean;
   updateOrigin?: string;
-  tiktokClientKey?: string;
-  tiktokConfigured?: boolean;
   googleClientId?: string;
   googleConfigured?: boolean;
   geminiConfigured?: boolean;
-  tiktokCallbackUrl?: string;
   youtubeCallbackUrl?: string;
 }
 
@@ -58,8 +55,6 @@ export function PWAInstallButton({ onNavigate }: { onNavigate?: (path: string) =
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
   // Local accounts form fields
-  const [tiktokClientKey, setTiktokClientKey] = useState('');
-  const [tiktokClientSecret, setTiktokClientSecret] = useState('');
   const [googleClientId, setGoogleClientId] = useState('');
   const [googleClientSecret, setGoogleClientSecret] = useState('');
   const [geminiApiKey, setGeminiApiKey] = useState('');
@@ -89,7 +84,6 @@ export function PWAInstallButton({ onNavigate }: { onNavigate?: (path: string) =
       }
       setHasBackendApi(true);
       setLocalConfig(data);
-      if (data.tiktokClientKey) setTiktokClientKey(data.tiktokClientKey);
       if (data.googleClientId) setGoogleClientId(data.googleClientId);
       if (data.updateOrigin) setUpdateSourceUrl(data.updateOrigin);
     } catch {
@@ -111,7 +105,6 @@ export function PWAInstallButton({ onNavigate }: { onNavigate?: (path: string) =
     typeof window !== 'undefined' && Boolean(window.chmrDesktop?.isElectron || window.chmrDesktop?.isLocalDesktop);
   const isLocalServer = Boolean(localConfig?.isLocalServer);
   const standaloneUrl = typeof window !== 'undefined' ? window.location.href : './';
-  const tiktokCallbackUrl = localConfig?.tiktokCallbackUrl || 'http://localhost:3000/auth/tiktok/callback';
   const youtubeCallbackUrl = localConfig?.youtubeCallbackUrl || 'http://localhost:3000/auth/youtube/callback';
 
   const handleCopy = async (id: string, value: string) => {
@@ -141,8 +134,6 @@ export function PWAInstallButton({ onNavigate }: { onNavigate?: (path: string) =
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          tiktokClientKey,
-          tiktokClientSecret,
           googleClientId,
           googleClientSecret,
           geminiApiKey,
@@ -153,7 +144,6 @@ export function PWAInstallButton({ onNavigate }: { onNavigate?: (path: string) =
       if (!res.ok || !json.ok) {
         throw new Error(json.error || 'Failed to save local keys.');
       }
-      setTiktokClientSecret('');
       setGoogleClientSecret('');
       setGeminiApiKey('');
       await fetchConfig();
@@ -225,7 +215,7 @@ export function PWAInstallButton({ onNavigate }: { onNavigate?: (path: string) =
           !hasBackendApi
             ? 'Install CHMR as an offline browser app or run locally from GitHub'
             : isLocalServer || isElectron
-              ? 'Configure local YouTube & TikTok keys or update your CHMR Desktop app'
+              ? 'Configure local YouTube OAuth keys or update your CHMR Desktop app'
               : 'Download CHMR Windows Desktop app or full offline source project'
         }
       >
@@ -363,12 +353,16 @@ export function PWAInstallButton({ onNavigate }: { onNavigate?: (path: string) =
                       <div className="p-4 rounded border border-[#2E2E37] bg-[#121216] space-y-2.5">
                         <h3 className="text-xs font-semibold text-[#F4F4F7] flex items-center gap-1.5">
                           <FolderCode className="w-3.5 h-3.5 text-[#34D399]" />
-                          <span>2. Run Locally From Your GitHub Repository</span>
+                          <span>2. Download Native Desktop App from GitHub</span>
                         </h3>
                         <p className="text-[11px] text-[#9A9AA6] leading-relaxed">
-                          Clone your GitHub repo and run pure static Vite locally (<span className="font-mono text-[#D4D4DC]">npm run dev:client</span>)
-                          or build static files (<span className="font-mono text-[#D4D4DC]">npm run build</span>). To enable optional local AI or TikTok routes, run{' '}
-                          <span className="font-mono text-[#D4D4DC]">npm run dev</span>.
+                          Download <span className="font-mono text-[#D4D4DC]">CHMR-Setup.exe</span>,{' '}
+                          <span className="font-mono text-[#D4D4DC]">CHMR-Portable.exe</span>,{' '}
+                          <span className="font-mono text-[#D4D4DC]">.dmg</span>, or{' '}
+                          <span className="font-mono text-[#D4D4DC]">.AppImage</span> from your GitHub{' '}
+                          <span className="text-[#E4E4EC] font-medium">Releases</span> tab, or clone the repo and run{' '}
+                          <span className="font-mono text-[#D4D4DC]">Launch-CHMR.bat</span> /{' '}
+                          <span className="font-mono text-[#D4D4DC]">npm run desktop</span>.
                         </p>
                       </div>
                     </>
@@ -491,10 +485,9 @@ export function PWAInstallButton({ onNavigate }: { onNavigate?: (path: string) =
                         Local Desktop OAuth Callback URLs (No Cloud Hosting Required)
                       </h3>
                       <p className="text-[11px] text-[#9A9AA6] mt-0.5 leading-relaxed">
-                        Register these <span className="font-mono text-[#D4D4DC]">localhost:3000</span> URLs in your own
-                        free Google Cloud OAuth Client and TikTok Developer App. Logging in locally completely bypasses
-                        AI Studio&apos;s Firebase Verification block (<span className="font-mono">Error 403</span>) and
-                        Google Cloud Run billing.
+                        Register this <span className="font-mono text-[#D4D4DC]">localhost:3000</span> URL in your own
+                        free Google Cloud OAuth Client so each user can sign in to YouTube directly for their session
+                        without any cloud hosting required.
                       </p>
                     </div>
 
@@ -519,29 +512,6 @@ export function PWAInstallButton({ onNavigate }: { onNavigate?: (path: string) =
                             <Copy className="w-3 h-3" />
                           )}
                           <span>{copiedField === 'yt-cb' ? 'Copied' : 'Copy'}</span>
-                        </button>
-                      </div>
-
-                      <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded bg-[#18181D] border border-[#27272E]">
-                        <div className="min-w-0">
-                          <span className="text-[10px] uppercase tracking-wider text-[#8E8E9B] block">
-                            TikTok Developer Redirect URI
-                          </span>
-                          <span className="text-[11px] font-mono text-[#E4E4EC] truncate block">
-                            {tiktokCallbackUrl}
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => handleCopy('tt-cb', tiktokCallbackUrl)}
-                          className="flex items-center gap-1 px-2 py-1 text-[11px] font-medium bg-[#232329] hover:bg-[#2E2E36] text-[#D4D4DC] border border-[#34343D] rounded shrink-0 cursor-pointer"
-                        >
-                          {copiedField === 'tt-cb' ? (
-                            <Check className="w-3 h-3 text-[#34D399]" />
-                          ) : (
-                            <Copy className="w-3 h-3" />
-                          )}
-                          <span>{copiedField === 'tt-cb' ? 'Copied' : 'Copy'}</span>
                         </button>
                       </div>
                     </div>
@@ -587,38 +557,6 @@ export function PWAInstallButton({ onNavigate }: { onNavigate?: (path: string) =
                             value={googleClientSecret}
                             onChange={(e) => setGoogleClientSecret(e.target.value)}
                             placeholder={localConfig?.googleConfigured ? '•••••••• (leave blank to keep)' : 'Google Client Secret'}
-                            className="w-full px-2.5 py-1.5 text-xs bg-[#18181D] border border-[#2E2E37] rounded text-[#F4F4F7] placeholder-[#6C6C78] focus:outline-none focus:border-[#3B82F6]"
-                          />
-                        </div>
-                      </div>
-
-                      {/* TikTok Credentials */}
-                      <div className="space-y-2 pt-2 border-t border-[#23232A]">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-medium text-[#E4E4EC]">TikTok Developer App</span>
-                          <span
-                            className={`px-1.5 py-0.5 text-[10px] font-mono rounded-sm border ${
-                              localConfig?.tiktokConfigured
-                                ? 'bg-[#064E3B]/50 text-[#6EE7B7] border-[#059669]/50'
-                                : 'bg-[#232329] text-[#9A9AA6] border-[#34343D]'
-                            }`}
-                          >
-                            {localConfig?.tiktokConfigured ? 'CONFIGURED' : 'NOT SET'}
-                          </span>
-                        </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                          <input
-                            type="text"
-                            value={tiktokClientKey}
-                            onChange={(e) => setTiktokClientKey(e.target.value)}
-                            placeholder="TikTok Client Key"
-                            className="w-full px-2.5 py-1.5 text-xs bg-[#18181D] border border-[#2E2E37] rounded text-[#F4F4F7] placeholder-[#6C6C78] focus:outline-none focus:border-[#3B82F6]"
-                          />
-                          <input
-                            type="password"
-                            value={tiktokClientSecret}
-                            onChange={(e) => setTiktokClientSecret(e.target.value)}
-                            placeholder={localConfig?.tiktokConfigured ? '•••••••• (leave blank to keep)' : 'TikTok Client Secret'}
                             className="w-full px-2.5 py-1.5 text-xs bg-[#18181D] border border-[#2E2E37] rounded text-[#F4F4F7] placeholder-[#6C6C78] focus:outline-none focus:border-[#3B82F6]"
                           />
                         </div>
@@ -678,7 +616,7 @@ export function PWAInstallButton({ onNavigate }: { onNavigate?: (path: string) =
                         <span className="text-[#E4E4EC] font-medium">CHMR-Windows-Desktop.zip</span> from the{' '}
                         <span className="text-[#E4E4EC] font-medium">Desktop App</span> tab, then reopen{' '}
                         <span className="text-[#E4E4EC] font-medium">Desktop &amp; Updates → Local Accounts</span> inside
-                        the native app to enter and save your TikTok and YouTube OAuth keys privately on your PC.
+                        the native app to enter your YouTube OAuth Client ID privately on your PC.
                       </p>
                       <button
                         type="button"

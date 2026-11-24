@@ -465,6 +465,7 @@ export function MonitorPanel({
             className="bg-[#1C1C22] border border-[#2C2C35] rounded px-1.5 py-0.5 text-[11px] font-mono-tabular text-[#C8C8D2] outline-none cursor-pointer"
           >
             <option value="16:9-hd">16:9 1080p</option>
+            <option value="16:9-1440p">16:9 1440p QHD</option>
             <option value="16:9-4k">16:9 4K UHD</option>
             <option value="9:16-vertical">9:16 Vertical</option>
             <option value="1:1-square">1:1 Square</option>

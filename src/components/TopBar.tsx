@@ -9,7 +9,6 @@ interface TopBarProps {
   onSelectView: (view: AppViewMode) => void;
   onOpenExport: () => void;
   onNavigate?: (path: string) => void;
-  savedTikTokUser?: { displayName: string; avatarUrl?: string } | null;
   savedYouTubeUser?: { name: string; avatarUrl?: string } | null;
 }
 
@@ -24,7 +23,6 @@ export function TopBar({
   onSelectView,
   onOpenExport,
   onNavigate,
-  savedTikTokUser,
   savedYouTubeUser,
 }: TopBarProps) {
   const handleLinkClick = (e: React.MouseEvent<HTMLAnchorElement>, path: string) => {
@@ -114,25 +112,6 @@ export function TopBar({
               <UserCheck className="w-3.5 h-3.5 text-[#FF453A] shrink-0" />
             )}
             <span className="truncate">YouTube · {savedYouTubeUser.name}</span>
-          </button>
-        )}
-        {savedTikTokUser && (
-          <button
-            type="button"
-            onClick={() => onSelectView('metrics')}
-            title={`TikTok saved: ${savedTikTokUser.displayName}. Click to inspect metrics.`}
-            className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/[0.05] hover:bg-white/[0.09] border border-white/[0.07] text-[11px] font-medium text-[#E5E5EA] max-w-[165px] cursor-pointer transition-colors"
-          >
-            {savedTikTokUser.avatarUrl ? (
-              <img
-                src={savedTikTokUser.avatarUrl}
-                alt={savedTikTokUser.displayName}
-                className="w-4 h-4 rounded object-cover shrink-0"
-              />
-            ) : (
-              <UserCheck className="w-3.5 h-3.5 text-[#30D158] shrink-0" />
-            )}
-            <span className="truncate">TikTok · {savedTikTokUser.displayName}</span>
           </button>
         )}
         <PWAInstallButton onNavigate={onNavigate} />

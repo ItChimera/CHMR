@@ -208,6 +208,7 @@ const BATCH_RESIZE_PRESETS: BatchResizePreset[] = [
   { id: 'vertical-916', label: '9:16 Vertical Fill (178%)', scale: 178, width: 1080, height: 1920, resetPosition: true },
   { id: 'square-11', label: '1:1 Square (1080×1080)', scale: 100, width: 1080, height: 1080, resetPosition: true },
   { id: 'hd-1080', label: '1080p HD (1920×1080)', scale: 100, width: 1920, height: 1080 },
+  { id: 'qhd-1440', label: '1440p QHD (2560×1440)', scale: 100, width: 2560, height: 1440 },
   { id: 'uhd-4k', label: '4K UHD (3840×2160)', scale: 100, width: 3840, height: 2160 },
   { id: 'custom', label: 'Custom Scale %', scale: 120 },
 ];

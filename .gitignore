@@ -7,5 +7,10 @@ coverage/
 *.log
 *.local
 chmr-local-config.json
+release/
+desktop/node_modules/
+desktop/web/
+desktop/icon.ico
+desktop/icon.png
 .env*
 !.env.example

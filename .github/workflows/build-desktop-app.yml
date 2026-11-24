@@ -1,0 +1,103 @@
+name: Build Downloadable Desktop App
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional release tag (e.g. v1.1.0) to publish a GitHub Release with installers'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform_name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform_name: Windows (.exe)
+            dist_cmd: dist:win
+            artifact_name: CHMR-Windows
+          - os: macos-latest
+            platform_name: macOS (.dmg)
+            dist_cmd: dist:mac
+            artifact_name: CHMR-macOS
+          - os: ubuntu-latest
+            platform_name: Linux (.AppImage)
+            dist_cmd: dist:linux
+            artifact_name: CHMR-Linux
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install web dependencies & build static bundle
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+
+      - name: Install desktop Electron builder
+        run: npm --prefix desktop install --no-audit --no-fund
+
+      - name: Package ${{ matrix.platform_name }} installer
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm --prefix desktop run ${{ matrix.dist_cmd }}
+
+      - name: Upload ${{ matrix.platform_name }} downloadable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.AppImage
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release_tag != ''
+    steps:
+      - name: Download all built installers
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Determine release tag
+        id: tag
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ github.event.inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release with downloadable apps
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.tag.outputs.name }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-artifacts/* --clobber
+          else
+            gh release create "$TAG" release-artifacts/* \
+              --title "CHMR $TAG" \
+              --notes "Downloadable desktop installers for Windows (.exe Setup & Portable), macOS (.dmg), and Linux (.AppImage). Runs 100% locally with no cloud service required."
+          fi

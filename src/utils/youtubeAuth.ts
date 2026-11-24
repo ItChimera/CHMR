@@ -1,16 +1,32 @@
 import { getApps, initializeApp } from 'firebase/app';
 import {
+  Auth,
   GoogleAuthProvider,
   User,
+  browserPopupRedirectResolver,
   getAuth,
+  inMemoryPersistence,
+  initializeAuth,
   onAuthStateChanged,
+  setPersistence,
   signInWithPopup,
 } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { parseJsonResponse } from './runtime';
 
 const app = getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig);
-const auth = getAuth(app);
+const auth: Auth = (() => {
+  try {
+    return initializeAuth(app, {
+      persistence: inMemoryPersistence,
+      popupRedirectResolver: browserPopupRedirectResolver,
+    });
+  } catch {
+    const existing = getAuth(app);
+    setPersistence(existing, inMemoryPersistence).catch(() => {});
+    return existing;
+  }
+})();
 
 export const YOUTUBE_SCOPES = [
   'https://www.googleapis.com/auth/youtube.upload',

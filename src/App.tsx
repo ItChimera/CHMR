@@ -10,7 +10,6 @@ import { MonitorPanel } from './components/MonitorPanel';
 import { OfflineIndicator } from './components/PWAInstallButton';
 import { ProjectBin } from './components/ProjectBin';
 import { ShortcutsModal } from './components/ShortcutsModal';
-import { TikTokCallbackView } from './components/TikTokCallbackView';
 import { TimelinePanel } from './components/TimelinePanel';
 import { AppViewMode, TopBar } from './components/TopBar';
 import {
@@ -51,12 +50,6 @@ import {
 import { decodeWaveformFromUrl } from './utils/audioSynth';
 import { computeAutoColorGrade } from './utils/sceneDetect';
 import { clamp, generateId } from './utils/timecode';
-import {
-  fetchTikTokStatus,
-  OAUTH_BROADCAST_CHANNEL,
-  setStoredTikTokSealedSession,
-  TIKTOK_SEALED_SESSION_KEY,
-} from './utils/tiktokAuth';
 import { detectVideoFps } from './utils/videoMetadata';
 import { fetchMyYouTubeChannel, initYouTubeAuth } from './utils/youtubeAuth';
 import { getAppBaseDir } from './utils/runtime';
@@ -160,15 +153,7 @@ export default function App() {
   const [masterVolume, setMasterVolume] = useState(100);
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [metricsPlatform, setMetricsPlatform] = useState<MetricsPlatformTab>('youtube');
-  const [lastTikTokPublishId, setLastTikTokPublishId] = useState<string | null>(() => {
-    try {
-      return localStorage.getItem('chmr_last_tiktok_publish_id');
-    } catch {
-      return null;
-    }
-  });
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
-  const [savedTikTokUser, setSavedTikTokUser] = useState<{ displayName: string; avatarUrl?: string } | null>(null);
   const [savedYouTubeUser, setSavedYouTubeUser] = useState<{ name: string; avatarUrl?: string } | null>(null);
 
   const [studioLayout, setStudioLayout] = useState<{
@@ -201,15 +186,7 @@ export default function App() {
     }
   }, [studioLayout]);
 
-  const refreshSavedAccounts = useCallback(async () => {
-    const data = await fetchTikTokStatus();
-    if (data) {
-      setSavedTikTokUser(data.connected && data.user ? data.user : null);
-    }
-  }, []);
-
   useEffect(() => {
-    refreshSavedAccounts();
     const unsubYt = initYouTubeAuth(
       (user, token) => {
         setSavedYouTubeUser({
@@ -231,58 +208,10 @@ export default function App() {
       },
       () => setSavedYouTubeUser(null)
     );
-    const onOAuthMsg = (event: MessageEvent) => {
-      const origin = event.origin;
-      if (
-        origin !== window.location.origin &&
-        !origin.endsWith('.ai.studio') &&
-        !origin.endsWith('.run.app') &&
-        !origin.includes('localhost')
-      ) {
-        return;
-      }
-      if (event.data?.type === 'OAUTH_AUTH_SUCCESS' && event.data?.provider === 'tiktok') {
-        if (typeof event.data?.sessionToken === 'string') {
-          setStoredTikTokSealedSession(event.data.sessionToken);
-        }
-        refreshSavedAccounts();
-      }
-    };
-    const onStorage = (event: StorageEvent) => {
-      if (event.key === TIKTOK_SEALED_SESSION_KEY) {
-        refreshSavedAccounts();
-      }
-    };
-    const onWindowFocus = () => {
-      refreshSavedAccounts();
-    };
-    let bc: BroadcastChannel | null = null;
-    if (typeof BroadcastChannel !== 'undefined') {
-      try {
-        bc = new BroadcastChannel(OAUTH_BROADCAST_CHANNEL);
-        bc.onmessage = (event) => {
-          if (event.data?.type === 'OAUTH_AUTH_SUCCESS' && event.data?.provider === 'tiktok') {
-            if (typeof event.data?.sessionToken === 'string') {
-              setStoredTikTokSealedSession(event.data.sessionToken);
-            }
-            refreshSavedAccounts();
-          }
-        };
-      } catch {
-        bc = null;
-      }
-    }
-    window.addEventListener('message', onOAuthMsg);
-    window.addEventListener('storage', onStorage);
-    window.addEventListener('focus', onWindowFocus);
     return () => {
       unsubYt();
-      window.removeEventListener('message', onOAuthMsg);
-      window.removeEventListener('storage', onStorage);
-      window.removeEventListener('focus', onWindowFocus);
-      bc?.close();
     };
-  }, [refreshSavedAccounts]);
+  }, []);
 
   const assetsMap = useMemo(() => new Map(assets.map((a) => [a.id, a])), [assets]);
 
@@ -440,6 +369,7 @@ export default function App() {
   const handleChangeAspectPreset = useCallback((preset: SequenceSettings['aspectPreset']) => {
     const dims: Record<SequenceSettings['aspectPreset'], [number, number]> = {
       '16:9-hd': [1920, 1080],
+      '16:9-1440p': [2560, 1440],
       '16:9-4k': [3840, 2160],
       '9:16-vertical': [1080, 1920],
       '1:1-square': [1080, 1080],
@@ -1583,16 +1513,6 @@ export default function App() {
   }, []);
 
   const normalizedPath = currentPath.replace(/\/+$/, '') || '/';
-  if (normalizedPath === '/auth/tiktok/callback') {
-    return (
-      <TikTokCallbackView
-        onFallbackHome={() => {
-          refreshSavedAccounts();
-          navigateTo('/');
-        }}
-      />
-    );
-  }
   if (normalizedPath === '/terms' || normalizedPath === '/terms-of-service') {
     return <LegalPages doc="terms" onNavigate={navigateTo} />;
   }
@@ -1610,7 +1530,6 @@ export default function App() {
           setIsExportOpen(true);
         }}
         onNavigate={navigateTo}
-        savedTikTokUser={savedTikTokUser}
         savedYouTubeUser={savedYouTubeUser}
       />
 
@@ -1620,7 +1539,6 @@ export default function App() {
           clipCount={clips.length}
           totalDuration={totalDuration}
           assets={assets}
-          savedTikTokUser={savedTikTokUser}
           savedYouTubeUser={savedYouTubeUser}
           onOpenMetrics={(platform) => {
             if (platform) setMetricsPlatform(platform);
@@ -1648,11 +1566,9 @@ export default function App() {
       {appView === 'metrics' && (
         <MetricsDashboard
           initialPlatform={metricsPlatform}
-          recentTikTokPublishId={lastTikTokPublishId}
           onBackHome={() => setAppView('home')}
           onOpenEditor={() => setAppView('studio')}
           onOpenExport={() => setIsExportOpen(true)}
-          onAccountStatusChanged={refreshSavedAccounts}
         />
       )}
 
@@ -2090,13 +2006,11 @@ export default function App() {
         isOpen={isExportOpen}
         onClose={() => setIsExportOpen(false)}
         onNavigate={navigateTo}
-        onAccountStatusChanged={refreshSavedAccounts}
         onOpenMetrics={(platform) => {
           setMetricsPlatform(platform);
           setIsExportOpen(false);
           setAppView('metrics');
         }}
-        onTikTokPublished={(publishId) => setLastTikTokPublishId(publishId)}
         sequence={sequence}
         sourceVideoFps={sourceVideoFps}
         tracks={tracks}
