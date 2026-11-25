@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Menu, session } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, session, shell } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { startLocalServer } = require('./local-server.cjs');
@@ -113,23 +113,37 @@ async function createWindow() {
     win.show();
   });
 
-  // Keep OAuth popups in an ephemeral (non-persistent) partition so individual logins are never saved
-  win.webContents.setWindowOpenHandler(() => ({
-    action: 'allow',
-    overrideBrowserWindowOptions: {
-      width: 560,
-      height: 720,
-      center: true,
-      autoHideMenuBar: true,
-      backgroundColor: '#121214',
-      ...(iconPath ? { icon: iconPath } : {}),
-      webPreferences: {
-        partition: 'chmr-oauth-ephemeral',
-        contextIsolation: true,
-        nodeIntegration: false,
+  // Keep OAuth popups in an ephemeral (non-persistent) partition so individual logins are never saved;
+  // open regular external links (Firebase Console, Google Cloud, YouTube) in the system browser.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    const isOAuthPopup =
+      !url ||
+      url === 'about:blank' ||
+      /^https:\/\/(accounts\.google\.com|[^/]+\.firebaseapp\.com|[^/]+\.web\.app)\//i.test(url) ||
+      /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//i.test(url);
+
+    if (!isOAuthPopup && /^https?:\/\//i.test(url)) {
+      shell.openExternal(url).catch(() => {});
+      return { action: 'deny' };
+    }
+
+    return {
+      action: 'allow',
+      overrideBrowserWindowOptions: {
+        width: 560,
+        height: 720,
+        center: true,
+        autoHideMenuBar: true,
+        backgroundColor: '#121214',
+        ...(iconPath ? { icon: iconPath } : {}),
+        webPreferences: {
+          partition: 'chmr-oauth-ephemeral',
+          contextIsolation: true,
+          nodeIntegration: false,
+        },
       },
-    },
-  }));
+    };
+  });
 
   win.loadURL(`http://localhost:${port}`);
 }

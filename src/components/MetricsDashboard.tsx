@@ -5,6 +5,7 @@ import {
   BarChart3,
   Clapperboard,
   ExternalLink,
+  LogOut,
   Maximize2,
   Minimize2,
   Minus,
@@ -20,7 +21,9 @@ import {
   fetchRecentYouTubeUploads,
   getYouTubeAccessToken,
   initYouTubeAuth,
+  FIREBASE_AUTHORIZED_DOMAINS_URL,
   signInYouTube,
+  signOutYouTube,
   YOUTUBE_TEST_USERS_URL,
   YouTubeChannelInfo,
   YouTubeRecentVideo,
@@ -271,6 +274,9 @@ export function MetricsDashboard({
         email: user.email || '',
         avatarUrl: user.photoURL || undefined,
       });
+      setYtChannel(null);
+      setYtVideos([]);
+      setHoveredIdx(null);
       await loadYouTubeMetrics(accessToken);
       onAccountStatusChanged?.();
     } catch (err) {
@@ -278,6 +284,45 @@ export function MetricsDashboard({
     } finally {
       setYtSigningIn(false);
     }
+  };
+
+  const handleYouTubeSwitchAccount = async () => {
+    setYtSigningIn(true);
+    setYtError(null);
+    try {
+      await signOutYouTube();
+      setYtConnected(false);
+      setYtHasToken(false);
+      setYtUser(null);
+      setYtChannel(null);
+      setYtVideos([]);
+      setHoveredIdx(null);
+      const { user, accessToken } = await signInYouTube();
+      setYtConnected(true);
+      setYtUser({
+        name: user.displayName || 'YouTube Creator',
+        email: user.email || '',
+        avatarUrl: user.photoURL || undefined,
+      });
+      await loadYouTubeMetrics(accessToken);
+      onAccountStatusChanged?.();
+    } catch (err) {
+      setYtError(err instanceof Error ? err.message : 'Google sign-in failed.');
+    } finally {
+      setYtSigningIn(false);
+    }
+  };
+
+  const handleYouTubeSignOut = async () => {
+    await signOutYouTube();
+    setYtConnected(false);
+    setYtHasToken(false);
+    setYtUser(null);
+    setYtChannel(null);
+    setYtVideos([]);
+    setYtError(null);
+    setHoveredIdx(null);
+    onAccountStatusChanged?.();
   };
 
   const shortsVideos = useMemo(() => ytVideos.filter((v) => v.isShort), [ytVideos]);
@@ -629,7 +674,7 @@ export function MetricsDashboard({
                     >
                       Test users
                     </a>{' '}
-                    (or configure local OAuth keys in Desktop &amp; Updates).
+                    if Google blocks sign-in.
                   </>
                 )}
               </p>
@@ -683,6 +728,30 @@ export function MetricsDashboard({
                     Retry
                   </button>
                 </div>
+              </div>
+            );
+          }
+          if (ytError.includes('not yet authorized for Google sign-in')) {
+            return (
+              <div className="p-4 rounded bg-[#2B1418] border border-[#EF4444]/40 flex items-center justify-between gap-4 flex-wrap">
+                <div className="space-y-1 min-w-0 flex-1">
+                  <div className="text-xs font-semibold text-[#FEE2E2]">
+                    Add <span className="font-mono">{window.location.hostname}</span> to Firebase Authorized Domains
+                  </div>
+                  <p className="text-xs text-[#FCA5A5] leading-relaxed">
+                    Open Firebase Console → Authentication → Settings → Authorized domains, click Add domain, enter{' '}
+                    <span className="font-mono text-white">{window.location.hostname}</span>, then click Sign in with Google again.
+                  </p>
+                </div>
+                <a
+                  href={FIREBASE_AUTHORIZED_DOMAINS_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#EF4444] hover:bg-[#DC2626] text-xs font-semibold text-white whitespace-nowrap shrink-0"
+                >
+                  <span>Open Firebase Settings</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
               </div>
             );
           }
@@ -751,6 +820,22 @@ export function MetricsDashboard({
                     <span>YouTube Studio</span>
                     <ExternalLink className="w-3 h-3" />
                   </a>
+                  <button
+                    type="button"
+                    disabled={ytSigningIn}
+                    onClick={handleYouTubeSwitchAccount}
+                    className="px-3 py-1.5 text-xs font-medium text-[#D4D4DC] bg-[#202028] hover:bg-[#2A2A34] border border-[#2E2E38] rounded cursor-pointer disabled:opacity-50 whitespace-nowrap shrink-0"
+                  >
+                    {ytSigningIn ? 'Switching...' : 'Switch Account'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleYouTubeSignOut}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#D4D4DC] bg-[#202028] hover:bg-[#2A2A34] border border-[#2E2E38] rounded cursor-pointer whitespace-nowrap shrink-0"
+                  >
+                    <LogOut className="w-3 h-3" />
+                    <span>Sign Out</span>
+                  </button>
                 </div>
               </div>
 

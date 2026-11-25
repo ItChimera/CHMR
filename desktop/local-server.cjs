@@ -276,7 +276,7 @@ function startLocalServer(preferredPort = Number(process.env.PORT || 3000), data
         const redirectUri = `${localOrigin}/auth/youtube/callback`;
         if (!clientId || !clientSecret) {
           return sendJson(res, 400, {
-            error: 'Add your Google OAuth Client ID and Secret in Desktop & Updates -> Local Accounts first.',
+            error: 'Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env or chmr-local-config.json first.',
             callbackUrl: redirectUri,
           });
         }

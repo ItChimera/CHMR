@@ -34,6 +34,7 @@ export const YOUTUBE_SCOPES = [
 ];
 
 export const YOUTUBE_TEST_USERS_URL = `https://console.cloud.google.com/auth/audience?project=${firebaseConfig.projectId}`;
+export const FIREBASE_AUTHORIZED_DOMAINS_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/settings`;
 
 const provider = new GoogleAuthProvider();
 for (const scope of YOUTUBE_SCOPES) {
@@ -294,7 +295,7 @@ export const signInYouTube = async (): Promise<{
     }
     if (code === 'auth/popup-closed-by-user') {
       throw new Error(
-        `Google sign-in was closed before finishing. If Google showed "Access blocked (Error 403: access_denied)", add that Gmail address under Test users in Google Cloud (${firebaseConfig.projectId}) or configure your own Google Client ID in Desktop & Updates.`
+        `Google sign-in was closed before finishing. If Google showed "Access blocked (Error 403: access_denied)", add that Gmail address under Test users in Google Cloud (${firebaseConfig.projectId}).`
       );
     }
     throw err;
